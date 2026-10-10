@@ -3,10 +3,11 @@
 #![expect(dead_code, reason = "scaffold: most commands arrive with later issues")]
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::ModifiersState;
 use winit::window::{Fullscreen, Window, WindowId};
 
@@ -14,7 +15,8 @@ use crate::decode::Orientation;
 use crate::files::Transfer;
 use crate::keymap;
 use crate::library::{Direction, SortKey};
-use crate::render::{ImageTexture, Renderer};
+use crate::render::{ImageTexture, Renderer, UiFrame};
+use crate::ui::Notices;
 use crate::view::{Anchor, PanBy, Turn, View};
 
 /// Everything the owner can ask for. Every row of `docs/context/keymap.md` maps to a variant;
@@ -53,6 +55,9 @@ pub enum Command {
     CopyToClipboard,
     PasteFromClipboard,
     TogglePreferences,
+    /// F9 in debug builds: a fixed notice, for checking notice timing and stacking by hand.
+    #[cfg(debug_assertions)]
+    TestNotice,
 }
 
 /// Window and GPU state exist from the first `resumed` on; Windows sends it once, at startup.
@@ -66,6 +71,12 @@ struct Shown {
     renderer: Renderer,
     image: ImageTexture,
     view: View,
+    egui: egui::Context,
+    egui_input: egui_winit::State,
+    notices: Notices,
+    /// When egui asked to be run again. It does after a new area's first frame, which it spends
+    /// measuring the area with nothing visible.
+    egui_repaint_at: Option<Instant>,
     mouse: keymap::Mouse,
     modifiers: ModifiersState,
     /// Last known cursor position in window pixels; wheel zoom anchors here.
@@ -95,11 +106,24 @@ impl ApplicationHandler for App {
             0,
             [size.width, size.height],
         );
+        let egui = egui::Context::default();
+        let egui_input = egui_winit::State::new(
+            egui.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            window.theme(),
+            Some(renderer.max_texture_dimension as usize),
+        );
         self.shown = Some(Shown {
             window,
             renderer,
             image,
             view,
+            egui,
+            egui_input,
+            notices: Notices::default(),
+            egui_repaint_at: None,
             mouse: keymap::Mouse::default(),
             modifiers: ModifiersState::empty(),
             cursor: [0.0, 0.0],
@@ -108,6 +132,15 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         let Some(shown) = &mut self.shown else { return };
+        // egui sees every event, so its pointer and modifier state stay current, but takes one only
+        // while a widget has focus; otherwise all input belongs to the keymap.
+        let response = shown.egui_input.on_window_event(&shown.window, &event);
+        if response.consumed && shown.egui.memory(|memory| memory.focused().is_some()) {
+            if response.repaint {
+                shown.window.request_redraw();
+            }
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -121,7 +154,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let size = shown.window.inner_size();
                 if size.width > 0 && size.height > 0 {
-                    shown.renderer.draw(&shown.image, shown.view.transform());
+                    shown.redraw();
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => shown.modifiers = modifiers.state(),
@@ -151,9 +184,49 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+
+    /// Sleeps until a notice starts fading or egui asks for a frame; redraws every frame while a
+    /// notice fades.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(shown) = &self.shown else { return };
+        let now = Instant::now();
+        let next = [shown.notices.next_change(now), shown.egui_repaint_at]
+            .into_iter()
+            .flatten()
+            .min();
+        let flow = match next {
+            Some(at) if at > now => ControlFlow::WaitUntil(at),
+            Some(_) => {
+                shown.window.request_redraw();
+                ControlFlow::Wait
+            }
+            None => ControlFlow::Wait,
+        };
+        event_loop.set_control_flow(flow);
+    }
 }
 
 impl Shown {
+    fn redraw(&mut self) {
+        let now = Instant::now();
+        let input = self.egui_input.take_egui_input(&self.window);
+        let notices = &mut self.notices;
+        let output = self.egui.run_ui(input, |ui| notices.show(ui.ctx(), now));
+        self.egui_input
+            .handle_platform_output(&self.window, output.platform_output);
+        // `Duration::MAX` means "no repaint needed"; adding it overflows to `None`.
+        self.egui_repaint_at = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .and_then(|viewport| now.checked_add(viewport.repaint_delay));
+        let ui = UiFrame {
+            primitives: self.egui.tessellate(output.shapes, output.pixels_per_point),
+            textures: output.textures_delta,
+            pixels_per_point: output.pixels_per_point,
+        };
+        self.renderer.draw(&self.image, self.view.transform(), ui);
+    }
+
     fn run(&mut self, command: Option<Command>, event_loop: &ActiveEventLoop) {
         let Some(command) = command else { return };
         let fullscreen = self.window.fullscreen().is_some();
@@ -170,6 +243,8 @@ impl Shown {
             Command::Zoom { factor, anchor } => self.view.zoom(factor, anchor),
             Command::Fit => self.view.fit(),
             Command::Rotate(turn) => self.view.rotate(turn),
+            #[cfg(debug_assertions)]
+            Command::TestNotice => self.notices.notify("Test notice", Instant::now()),
             Command::ToggleMagnificationFilter => {
                 let filter = &mut self.renderer.magnification_filter;
                 *filter = filter.toggled();

@@ -34,8 +34,9 @@ impl MagnificationFilter {
 /// tested on a machine that has a GPU.
 const FORCE_WARP_VAR: &str = "SUPERSLIDE_FORCE_WARP";
 
-/// Setting this to `stripes` replaces the checkerboard stand-in with an 8000 × 6000 image of 1 px
-/// stripes, the worst case for moiré and a 48 MP upload to time.
+/// Replaces the checkerboard stand-in: `stripes` is an 8000 × 6000 image of 1 px stripes, the
+/// worst case for moiré and a 48 MP upload to time; `white` and `black` are solid, for checking
+/// that overlays stay legible.
 const STAND_IN_VAR: &str = "SUPERSLIDE_STAND_IN";
 
 /// Bytes of the `Uniforms` struct in `quad.wgsl`: a `mat2x2<f32>`, then two `vec2<f32>`.
@@ -88,6 +89,13 @@ impl ImageTexture {
     }
 }
 
+/// One frame of egui output, tessellated, ready to paint over the image.
+pub struct UiFrame {
+    pub primitives: Vec<egui::ClippedPrimitive>,
+    pub textures: egui::TexturesDelta,
+    pub pixels_per_point: f32,
+}
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -102,12 +110,9 @@ pub struct Renderer {
     mip_pipeline: wgpu::RenderPipeline,
     mip_layout: wgpu::BindGroupLayout,
     mip_sampler: wgpu::Sampler,
+    egui: egui_wgpu::Renderer,
     pub magnification_filter: MagnificationFilter,
     /// The largest texture side the device accepts. `decode` downscales anything bigger.
-    #[expect(
-        dead_code,
-        reason = "scaffold: read once the preload cache starts decode workers"
-    )]
     pub max_texture_dimension: u32,
 }
 
@@ -249,6 +254,8 @@ impl Renderer {
             ..Default::default()
         });
 
+        let egui = egui_wgpu::Renderer::new(&device, format, Default::default());
+
         Ok(Self {
             surface,
             device,
@@ -262,6 +269,7 @@ impl Renderer {
             mip_pipeline,
             mip_layout,
             mip_sampler,
+            egui,
             magnification_filter: MagnificationFilter::default(),
             max_texture_dimension,
         })
@@ -404,7 +412,24 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    pub fn draw(&mut self, image: &ImageTexture, transform: Transform) {
+    /// The image, then egui over it, in one pass. egui's texture changes apply even when the frame
+    /// is skipped, or a font atlas sent then would never arrive.
+    pub fn draw(&mut self, image: &ImageTexture, transform: Transform, mut ui: UiFrame) {
+        // Draining matters: epaint asserts that no delta is dropped unapplied. Deltas for one
+        // texture apply in order: a full image, then patches to it.
+        for (id, deltas) in ui.textures.set.drain() {
+            for delta in &deltas {
+                self.egui
+                    .update_texture(&self.device, &self.queue, id, delta);
+            }
+        }
+        self.paint(image, transform, &ui);
+        for id in ui.textures.free.drain() {
+            self.egui.free_texture(&id);
+        }
+    }
+
+    fn paint(&mut self, image: &ImageTexture, transform: Transform, ui: &UiFrame) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             // Present this one, then reconfigure so the next frame matches the surface again.
@@ -424,6 +449,17 @@ impl Renderer {
             .write_buffer(&self.uniforms, 0, &uniform_bytes(transform, &self.config));
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: ui.pixels_per_point,
+        };
+        let egui_commands = self.egui.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &ui.primitives,
+            &screen,
+        );
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("quad"),
@@ -446,8 +482,11 @@ impl Renderer {
             pass.set_bind_group(0, frame_group, &[]);
             pass.set_bind_group(1, &image.bind_group, &[]);
             pass.draw(0..4, 0..1);
+            self.egui
+                .render(&mut pass.forget_lifetime(), &ui.primitives, &screen);
         }
-        self.queue.submit([encoder.finish()]);
+        self.queue
+            .submit(egui_commands.into_iter().chain([encoder.finish()]));
         self.queue.present(frame);
     }
 }
@@ -560,13 +599,14 @@ fn uniform_bytes(transform: Transform, config: &wgpu::SurfaceConfiguration) -> [
     bytes
 }
 
-/// A generated image until decoding exists: the checkerboard, or the stripes `STAND_IN_VAR`
-/// selects.
+/// A generated image until decoding exists: the checkerboard, or what `STAND_IN_VAR` selects.
 pub fn stand_in() -> ([u32; 2], Vec<u8>) {
-    if std::env::var(STAND_IN_VAR).is_ok_and(|v| v == "stripes") {
-        stripes()
-    } else {
-        checkerboard()
+    let solid = |value| ([384, 256], [value, value, value, 255].repeat(384 * 256));
+    match std::env::var(STAND_IN_VAR).as_deref() {
+        Ok("stripes") => stripes(),
+        Ok("white") => solid(255),
+        Ok("black") => solid(0),
+        _ => checkerboard(),
     }
 }
 

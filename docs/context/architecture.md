@@ -58,10 +58,16 @@ Navigation wraps from the last image to the first and back, with a notice saying
 - A startup failure (no window, no adapter, no device) shows a message box and exits: no overlay exists yet and release builds have no console.
 - One texture per cached image (`render::ImageTexture`), `Rgba8UnormSrgb`, full mip chain (`floor(log2(max(w, h))) + 1` levels), generated after upload by a render pass per level ([mip.wgsl](../../src/mip.wgsl)) that samples the level above with a linear filter. The sRGB format makes that average gamma-correct: 1 px black-and-white stripes shrink to sRGB 188, not 128. `ImageTexture::bytes` reports `w × h × 4 × 4/3` for the preload budget.
 - `Renderer::upload` writes pixels in slices of about 16 MB, since `write_texture` stages each call in one buffer and wgpu's default buffer limit is 256 MB. It blocks until the GPU finishes, so the stderr log of each upload's time is real and staging memory is freed before the next upload. Measured on an RTX 3070, release build: 48 MP in 53–75 ms, warm.
-- Until decoding lands, a generated image stands in: a checkerboard, or with `SUPERSLIDE_STAND_IN=stripes` an 8000 × 6000 image of 1 px stripes for checking moiré and upload time.
+- Until decoding lands, a generated image stands in: a checkerboard, or with `SUPERSLIDE_STAND_IN=stripes` an 8000 × 6000 image of 1 px stripes for checking moiré and upload time; `white` and `black` are solid, for checking overlay legibility.
 - One quad, one draw, no vertex buffer. A uniform holds a 2×2 matrix and offset from `view` (`view::Transform`, which documents the coordinates) plus the window size, mapping the quad to window pixels. EXIF orientation (including its mirrorings) and screen rotation are both folded into that matrix.
 - Sampling: trilinear by default. Ctrl+F switches magnification to nearest, for sharp pixels at high zoom; minification stays mipmapped linear so a shrunk image never aliases. The quad's bind group 0 holds the uniforms and sampler, one prebuilt group per filter, so the toggle rebuilds nothing; group 1 is the image.
-- egui draws on the same device after the image, in the same frame.
+- egui (`egui-winit` for input, `egui-wgpu` for painting) draws on the same device after the image, in the same render pass. egui's texture changes are applied even on a skipped frame, or a font atlas sent then would never arrive.
+
+## Overlays and notices
+
+- Notices live in [ui.rs](../../src/ui.rs) as `Notices`: top-right, oldest on top, at most 3 (a fourth drops the oldest). Each is fully visible for 3 s, then fades out over 0.5 s. Repeating a shown text restarts its timer and moves it to the bottom instead of stacking. White 20 pt text on black at 240/255 alpha: the surface is sRGB, so egui blends in linear light, and lower alphas leave a mid-grey backing on white images. The top-left corner is left to the info overlay.
+- Redraws are on demand. `App::about_to_wait` sleeps until a notice starts fading or egui asks for a frame (it does after an area's first frame, which it spends measuring with nothing visible), and redraws every frame while a notice fades. Nothing animates once notices are gone: idle CPU is zero.
+- Input routing: every window event goes to egui first, so its pointer and modifier state stay current, but egui keeps an event only while one of its widgets has focus (the preferences screen). Otherwise all input goes to `keymap`. Notices never take clicks, so a drag that starts on a notice still pans.
 
 ## View transform
 

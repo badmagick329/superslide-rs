@@ -26,6 +26,8 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
     let (command, repeats) = match key {
         Key::Named(NamedKey::F11 | NamedKey::Enter) => (Command::ToggleFullscreen, false),
         Key::Named(NamedKey::Escape) => (Command::LeaveFullscreenOrQuit, false),
+        #[cfg(debug_assertions)]
+        Key::Named(NamedKey::F9) => (Command::TestNotice, false),
         Key::Named(
             arrow @ (NamedKey::ArrowLeft
             | NamedKey::ArrowRight

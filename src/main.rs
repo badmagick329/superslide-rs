@@ -17,7 +17,7 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 fn main() {
     let event_loop = EventLoop::new().expect("winit supports Windows");
-    // Nothing animates yet: sleep until input or a redraw request arrives.
+    // Sleep until input or a redraw request; `App::about_to_wait` adds wake-ups for notices.
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop
         .run_app(&mut app::App::default())
