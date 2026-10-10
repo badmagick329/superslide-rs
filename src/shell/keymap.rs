@@ -4,6 +4,7 @@
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use crate::browse::domain::{Direction, SortKey};
 use crate::shell::command::Command;
 use crate::view::domain::{Anchor, PanBy, Turn};
 
@@ -26,9 +27,15 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
     let (command, repeats) = match key {
         Key::Named(NamedKey::F11 | NamedKey::Enter) => (Command::ToggleFullscreen, false),
         Key::Named(NamedKey::Escape) => (Command::LeaveFullscreenOrQuit, false),
-        // Held, these will repeat under the advance limit (SSR-12); until then, once per press.
-        Key::Named(NamedKey::Space) if plain => (Command::Next, false),
-        Key::Named(NamedKey::Backspace) if plain => (Command::Previous, false),
+        // Repeat passes through: the advance limit, not the keyboard, sets the pace.
+        Key::Named(NamedKey::Space) if plain => (advance(Direction::Forward, repeat), true),
+        Key::Named(NamedKey::Backspace) if plain => (advance(Direction::Backward, repeat), true),
+        Key::Named(NamedKey::ArrowLeft) if ctrl && !modifiers.alt_key() => {
+            (Command::JumpGroup(Direction::Backward), false)
+        }
+        Key::Named(NamedKey::ArrowRight) if ctrl && !modifiers.alt_key() => {
+            (Command::JumpGroup(Direction::Forward), false)
+        }
         #[cfg(debug_assertions)]
         Key::Named(NamedKey::F9) => (Command::TestNotice, false),
         Key::Named(
@@ -60,6 +67,19 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
                 "0" => (Command::Fit, false),
                 "r" | "R" => (Command::Rotate(Turn::Right), false),
                 "l" | "L" => (Command::Rotate(Turn::Left), false),
+                "n" | "N" => (Command::Sort(SortKey::Name), false),
+                "d" | "D" => (Command::Sort(SortKey::Date), false),
+                "z" | "Z" => (Command::Sort(SortKey::Size), false),
+                "s" | "S" => (Command::Shuffle, false),
+                "v" | "V" => (Command::ReverseSort, false),
+                "g" | "G" => (Command::ToggleGrouping, false),
+                // The Shift key, not the character, so Caps Lock does not turn O recursive.
+                "o" | "O" => (
+                    Command::Open {
+                        recursive: modifiers.shift_key(),
+                    },
+                    false,
+                ),
                 _ => return None,
             }
         }
@@ -67,6 +87,20 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
     };
     // Held toggles would flicker between states, and a held Esc would leave fullscreen then quit.
     (repeats || !repeat).then_some(command)
+}
+
+/// Space or Backspace let go, whatever the modifiers: a repeat waiting under the advance limit
+/// must not advance after it.
+pub fn released(key: &Key) -> Option<Direction> {
+    match key {
+        Key::Named(NamedKey::Space) => Some(Direction::Forward),
+        Key::Named(NamedKey::Backspace) => Some(Direction::Backward),
+        _ => None,
+    }
+}
+
+fn advance(direction: Direction, repeat: bool) -> Command {
+    Command::Advance { direction, repeat }
 }
 
 fn zoom(factor: f32) -> Command {
@@ -150,8 +184,8 @@ impl Mouse {
             return None;
         }
         Some(match button {
-            MouseButton::Left => Command::Previous,
-            _ => Command::Next,
+            MouseButton::Left => advance(Direction::Backward, false),
+            _ => advance(Direction::Forward, false),
         })
     }
 }
@@ -167,11 +201,17 @@ mod tests {
         for at in [[102.0, 101.0], [97.0, 98.0], [104.0, 100.0], [100.0, 96.0]] {
             assert_eq!(mouse.moved(at), None, "jitter to {at:?} panned");
         }
-        assert_eq!(mouse.released(MouseButton::Left), Some(Command::Previous));
+        assert_eq!(
+            mouse.released(MouseButton::Left),
+            Some(advance(Direction::Backward, false))
+        );
 
         mouse.pressed(MouseButton::Right, [100.0, 100.0]);
         assert_eq!(mouse.moved([103.0, 102.0]), None);
-        assert_eq!(mouse.released(MouseButton::Right), Some(Command::Next));
+        assert_eq!(
+            mouse.released(MouseButton::Right),
+            Some(advance(Direction::Forward, false))
+        );
     }
 
     #[test]
@@ -240,6 +280,36 @@ mod tests {
         );
         // Ctrl+R and Ctrl+arrows belong to other bindings, not rotate and pan.
         assert_eq!(for_key(&Key::Character("r".into()), ctrl, false), None);
-        assert_eq!(for_key(&Key::Named(NamedKey::ArrowLeft), ctrl, false), None);
+        assert_eq!(
+            for_key(&Key::Named(NamedKey::ArrowLeft), ctrl, false),
+            Some(Command::JumpGroup(Direction::Backward))
+        );
+        assert_eq!(for_key(&Key::Named(NamedKey::ArrowLeft), ctrl, true), None);
+    }
+
+    #[test]
+    fn held_space_repeats_for_the_advance_limit_to_pace() {
+        let none = ModifiersState::empty();
+        let space = Key::Named(NamedKey::Space);
+        assert_eq!(
+            for_key(&space, none, true),
+            Some(advance(Direction::Forward, true))
+        );
+        assert_eq!(released(&space), Some(Direction::Forward));
+        // Ctrl+Space is not a navigation key, but letting go of it still is.
+        assert_eq!(for_key(&space, ModifiersState::CONTROL, false), None);
+    }
+
+    #[test]
+    fn shift_not_caps_lock_makes_o_recursive() {
+        let caps_o = Key::Character("O".into());
+        assert_eq!(
+            for_key(&caps_o, ModifiersState::empty(), false),
+            Some(Command::Open { recursive: false })
+        );
+        assert_eq!(
+            for_key(&caps_o, ModifiersState::SHIFT, false),
+            Some(Command::Open { recursive: true })
+        );
     }
 }

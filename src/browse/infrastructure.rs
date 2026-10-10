@@ -25,10 +25,6 @@ pub fn is_image(path: &Path) -> bool {
 
 /// What to scan; one per opening route in `docs/context/architecture.md` *Opening*.
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "scaffold: Shift+O arrives with navigation")
-)]
 pub enum Open {
     /// Command-line paths or one burst of drops. A lone file opens its folder at that file; a
     /// lone folder opens its images; several paths open the union of each file and each folder's

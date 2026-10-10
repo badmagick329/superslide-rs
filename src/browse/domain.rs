@@ -6,6 +6,8 @@ use std::hash::{BuildHasher, RandomState};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+pub mod advance;
+
 /// Direction of travel through the image list; the preload window leans this way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -15,10 +17,6 @@ pub enum Direction {
 
 /// What N, D and Z sort by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "scaffold: sort keys arrive with navigation")
-)]
 pub enum SortKey {
     /// Natural and case-insensitive: `img2` before `img10`.
     Name,
@@ -157,19 +155,45 @@ impl ImageList {
         wrapped
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "scaffold: sort keys arrive with navigation")
-    )]
+    /// Moves to the first image of the next or previous group, wrapping at the ends; previous
+    /// means the group before the current image's, wherever in its group that image is. `None`
+    /// unless grouped by subfolder. Otherwise returns whether it wrapped.
+    pub fn jump_group(&mut self, direction: Direction) -> Option<bool> {
+        if !self.order.grouped || self.entries.is_empty() {
+            return None;
+        }
+        let group = |position: usize| folder(&self.entries[position].path);
+        let start_of = |mut position: usize| {
+            while position > 0 && group(position - 1) == group(position) {
+                position -= 1;
+            }
+            position
+        };
+        let (next, wrapped) = match direction {
+            Direction::Forward => {
+                let mut next = self.current;
+                while next < self.entries.len() && group(next) == group(self.current) {
+                    next += 1;
+                }
+                match next == self.entries.len() {
+                    true => (0, true),
+                    false => (next, false),
+                }
+            }
+            Direction::Backward => match start_of(self.current) {
+                0 => (start_of(self.entries.len() - 1), true),
+                start => (start_of(start - 1), false),
+            },
+        };
+        self.current = next;
+        Some(wrapped)
+    }
+
     pub fn order(&self) -> Order {
         self.order
     }
 
     /// Re-sorts in memory, keeping the same current image.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "scaffold: sort keys arrive with navigation")
-    )]
     pub fn set_order(&mut self, order: Order) {
         let current = self.current().map(|entry| entry.path.clone());
         self.order = order;
@@ -492,5 +516,54 @@ mod tests {
         let mut empty = ImageList::new(Vec::new(), None, by(SortKey::Name));
         assert!(!empty.step(Direction::Forward));
         assert!(empty.current().is_none());
+    }
+
+    #[test]
+    fn group_jumps_land_on_first_images_and_wrap() {
+        let entries = vec![
+            entry("r/a/1.jpg", 0, 0),
+            entry("r/a/2.jpg", 0, 0),
+            entry("r/b/1.jpg", 0, 0),
+            entry("r/c/1.jpg", 0, 0),
+            entry("r/c/2.jpg", 0, 0),
+        ];
+        let order = Order {
+            grouped: true,
+            ..by(SortKey::Name)
+        };
+        let at = |path: &str| ImageList::new(entries.clone(), Some(Path::new(path)), order);
+        let jumped = |path: &str, direction| {
+            let mut list = at(path);
+            let wrapped = list.jump_group(direction).unwrap();
+            (
+                list.current().unwrap().path.to_str().unwrap().to_owned(),
+                wrapped,
+            )
+        };
+        assert_eq!(
+            jumped("r/a/2.jpg", Direction::Forward),
+            ("r/b/1.jpg".into(), false)
+        );
+        assert_eq!(
+            jumped("r/c/1.jpg", Direction::Forward),
+            ("r/a/1.jpg".into(), true)
+        );
+        // From the middle of a group, back goes to the group before, not this group's start.
+        assert_eq!(
+            jumped("r/c/2.jpg", Direction::Backward),
+            ("r/b/1.jpg".into(), false)
+        );
+        assert_eq!(
+            jumped("r/b/1.jpg", Direction::Backward),
+            ("r/a/1.jpg".into(), false)
+        );
+        assert_eq!(
+            jumped("r/a/2.jpg", Direction::Backward),
+            ("r/c/1.jpg".into(), true)
+        );
+
+        let mut ungrouped = ImageList::new(entries, None, by(SortKey::Name));
+        assert_eq!(ungrouped.jump_group(Direction::Forward), None);
+        assert_eq!(ungrouped.current_position(), 0);
     }
 }

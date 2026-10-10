@@ -12,7 +12,7 @@ The code is vertical slices, one folder per feature, each split into the layers 
 | --- | --- | --- |
 | [`shell`](../../src/shell/mod.rs) | | The outer layer: [`app`](../../src/shell/app.rs) (the winit `ApplicationHandler`: owns all state, runs commands), [`command`](../../src/shell/command.rs) (`Command`, everything the owner can ask for), [`keymap`](../../src/shell/keymap.rs) (the only place bindings are decided) and [`render`](../../src/shell/render.rs) (wgpu, textures, mips, the quad pipeline, egui painting). |
 | [`image_file`](../../src/image_file/mod.rs) | domain | The shared kernel: `Format` (the one list of extensions, and their signatures) and EXIF `Orientation`. |
-| [`browse`](../../src/browse/mod.rs) | domain, infrastructure | The image list and its order in `domain`; scanning paths into it, on its own thread, with the folder filter, in `infrastructure`. |
+| [`browse`](../../src/browse/mod.rs) | domain, infrastructure, presentation | The image list, its order and group jumps in `domain`, with the advance limit in [`domain::advance`](../../src/browse/domain/advance.rs); scanning paths into it, on its own thread, with the folder filter, in `infrastructure`; the wording of the order notice in `presentation`. |
 | [`load`](../../src/load/mod.rs) | domain, infrastructure, presentation | `Decoded`, `DecodeError` and the trust rules (content matches name, size cap, fit to GPU) in `domain`, with the preload cache's policy in [`domain::preload`](../../src/load/domain/preload.rs); the decoders and the decode workers ([`infrastructure::workers`](../../src/load/infrastructure/workers.rs)) in `infrastructure`; the error card in `presentation`. |
 | [`view`](../../src/view/mod.rs) | domain | The view transform (fit, zoom, pan, screen rotation, EXIF orientation) and the magnification filter. Pure math. |
 | [`notices`](../../src/notices/mod.rs) | domain, presentation | Notice timing and stacking in `domain`; egui drawing and count wording in `presentation`. |
@@ -35,7 +35,7 @@ Workers and the scan thread send `shell::app::AppEvent`s through the event loop'
 
 Built in [app.rs](../../src/shell/app.rs) (`Shown::show_current`). Navigation moves the current image in the image list at once, but the screen keeps the previous texture (`Showing`) until the new image is in the preload cache, then swaps in a single frame: no blank frame, ever. Each image opens at fit. After 150 ms without the new image, a `Loading…` notice shows; it is dismissed the moment the image arrives. A file that fails to decode shows an error card, centred, with its file name and the `DecodeError` line; view commands do nothing on it and navigation continues past it.
 
-Next and previous step once per press and wrap at the ends (`ImageList::step`). The rest of navigation (advance limit, wrap notice, screen rotation per path, window title) is SSR-12.
+Next and previous wrap at the ends (`ImageList::step`) with a notice, `Wrapped to the first image` or `Wrapped to the last image`, since a wrap is easy to miss; Ctrl+Left/Right group jumps wrap the same way. The window title is `<file name> — SuperSlide-RS` for what is on screen, error cards included, so it never names an image still loading.
 
 ## Preload cache
 
@@ -86,7 +86,7 @@ Built in the `load` slice: [infrastructure.rs](../../src/load/infrastructure.rs)
 
 ## View transform
 
-Built in [view/domain.rs](../../src/view/domain.rs) as `View`: one per shown image, holding the stored image size, window size, EXIF orientation, quarter-turns of screen rotation, zoom relative to fit, and the image point at the window centre. That point is kept in image coordinates, so a window resize keeps the same detail centred at the same zoom relative to fit. `View::transform` produces the quad uniform's matrix and offset; orientation and screen rotation compose into one signed-permutation matrix, so mirrored orientations need no special case. Opening an image starts at fit and centred; screen rotation survives navigation away and back, per path, until the app closes (`View::turns` carries it; wired with SSR-12, so for now every image opens unrotated).
+Built in [view/domain.rs](../../src/view/domain.rs) as `View`: one per shown image, holding the stored image size, window size, EXIF orientation, quarter-turns of screen rotation, zoom relative to fit, and the image point at the window centre. That point is kept in image coordinates, so a window resize keeps the same detail centred at the same zoom relative to fit. `View::transform` produces the quad uniform's matrix and offset; orientation and screen rotation compose into one signed-permutation matrix, so mirrored orientations need no special case. Opening an image starts at fit and centred; screen rotation survives navigation away and back, per path, until the app closes (`shell::app` keeps a map from path to `View::turns`, written on each R / L and read when the image is shown again; it survives a new open too).
 
 - Zoom from right-drag or the wheel anchors at the cursor; from keys, at the window centre. Zoom range 1/8× fit to 32× native pixels, except that fit stays reachable when it is already past 32× (a tiny image in a large window).
 - Pan clamps so the image cannot leave the window: an image smaller than the window on an axis stays centred on that axis; a larger one keeps covering the window. Every zoom, pan and resize reapplies the clamp.
@@ -99,14 +99,15 @@ Built in [keymap.rs](../../src/shell/keymap.rs) as `keymap::Mouse`. A press that
 
 ## Advance limit and slideshow
 
-One timer drives both, through `ControlFlow::WaitUntil`.
+The advance limit is built as `AdvanceLimit` in [advance.rs](../../src/browse/domain/advance.rs); the slideshow (SSR-13) will share its wake-up through `ControlFlow::WaitUntil`.
 
-- The first press of Space or Backspace always advances. Key-repeat events advance only once the advance limit has passed since the last advance.
+- A press of Space or Backspace, or a click, always advances. Key repeat counts only as proof the key is still down: a repeat after the limit advances at once; an earlier one is held and advances the moment the limit passes (`AdvanceLimit::due`, which `App::about_to_wait` sleeps until), so the pace is the limit itself, not the limit rounded up to the keyboard's repeat rate. Letting the key go drops a held repeat. A key whose release is never seen advances at most once more, since only a repeat arms the timer.
+- Measured: holding Space for 10 s over 24 MP JPEGs advanced 20 times, one every 500 ms.
 - The slideshow advances every slideshow interval, but only once the next image is in the preload cache; a manual navigation restarts the interval.
 
 ## Opening
 
-Built in [browse/infrastructure.rs](../../src/browse/infrastructure.rs): `Open` names the route, `scan` walks it (`walkdir`) and returns a `Found` holding the `ImageList`, the count of unreadable folders (skipped, never fatal) and the paths given to open that do not exist. Only command-line paths are wired so far; they open through the same `Open::Paths` route drops will use. The result replaces the image list, loads the current image through the preload cache and shows a notice (`12,345 images`, plus `Skipped 3 unreadable folders` or `Not found: …` when they apply).
+Built in [browse/infrastructure.rs](../../src/browse/infrastructure.rs): `Open` names the route, `scan` walks it (`walkdir`) and returns a `Found` holding the `ImageList`, the count of unreadable folders (skipped, never fatal) and the paths given to open that do not exist. `App::open` starts every route: command-line paths and drops as `Open::Paths`, O as `Open::Paths` of the picked file, Shift+O as `Open::Recursive`. The result replaces the image list, loads the current image through the preload cache and shows a notice (`12,345 images`, plus `Skipped 3 unreadable folders` or `Not found: …` when they apply).
 
 | Route | Image list |
 | --- | --- |
@@ -115,12 +116,18 @@ Built in [browse/infrastructure.rs](../../src/browse/infrastructure.rs): `Open` 
 | Shift+O | Recursive open of the chosen folder; shuffle. |
 | Several paths (command line, or drops in one burst) | Each file itself and each folder's images, not recursive, deduplicated; current image is the first image file named; sort by name. |
 
+- Drops: winit sends one `DroppedFile` per file, and a drag delivers all of them before the event loop next goes idle, so `App::about_to_wait` opens whatever arrived since the last idle as one burst.
+- O and Shift+O use `rfd`'s native dialogs, parented to the window and opening at the current image's folder; O filters to `image_file::domain::Format::EXTENSIONS`. They are modal, so the event loop waits for them. Shift+O is the Shift key, not the capital letter, so Caps Lock leaves O alone.
+- An open that finds no images keeps the current image list; only its notice (`No images found`) shows.
 - The folder filter applies to every folder below the opened root, matching folder names case-insensitively; the root itself is never filtered.
 - Progress goes out at most every 100 ms, so a scan that finishes sooner shows no `Scanning…` notice. Measured: 100,000 files scanned in 0.3 s warm (release), 1.4 s in a debug build while zooming, with the window redrawing throughout.
 
 ## Image list order
 
-[browse/domain.rs](../../src/browse/domain.rs): `ImageList` holds the entries in display order and the current image; `Order` is the sort mode plus reverse and grouping. `ImageList::set_order` re-sorts in memory and keeps the current image.
+[browse/domain.rs](../../src/browse/domain.rs): `ImageList` holds the entries in display order and the current image; `Order` is the sort mode plus reverse and grouping. `ImageList::set_order` re-sorts in memory and keeps the current image, so the screen does not change; the preload cache is reindexed and retargeted at the image's new neighbours.
+
+- N, D and Z set the sort mode and S shuffles anew; reverse and grouping stay as they were. V and G toggle them. Each shows one notice naming the whole order (`browse::presentation::describe`: `Sorted by date, reversed, grouped by folder`), replacing the last.
+- Ctrl+Right goes to the first image of the next group; Ctrl+Left to the first image of the group before the current image's, wherever in its group that image is (`ImageList::jump_group`). Both do nothing unless grouped.
 
 - Name sort is natural and case-insensitive (`img2` before `img10`), on the file name only; date is the file's modified time; size is bytes. Ties fall back to name, then the full path, so every order is total.
 - Shuffle starts from path order and runs Fisher–Yates on SplitMix64 from the stored `u64` seed, so a seed rebuilds the same order whatever the scan order; a test pins the output, since changing the generator would scramble restored sessions.

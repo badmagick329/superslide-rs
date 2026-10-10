@@ -1,5 +1,6 @@
 //! The winit `ApplicationHandler`: turns input into [`Command`]s, owns all state and runs commands.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -11,9 +12,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::browse::domain::{Direction, ImageList};
+use crate::browse::domain::advance::AdvanceLimit;
+use crate::browse::domain::{Direction, ImageList, Order, SortMode, folder};
 use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
-use crate::image_file::domain::Orientation;
+use crate::browse::presentation::describe;
+use crate::image_file::domain::{Format, Orientation};
 use crate::load::domain::preload::{PreloadCache, preload_window};
 use crate::load::domain::{DecodeError, Decoded};
 use crate::load::infrastructure::workers::Workers;
@@ -40,6 +43,9 @@ pub enum AppEvent {
 /// Key of the notice that shows scan progress, then its result.
 const SCAN_NOTICE: &str = "scan";
 const LOADING_NOTICE: &str = "loading";
+/// Key of the notice naming the image list's order, so pressing sort keys in a row replaces it.
+const ORDER_NOTICE: &str = "order";
+const TITLE: &str = "SuperSlide-RS";
 /// Waits shorter than this pass without a notice: a flash of `Loading…` on every image change
 /// would be noise.
 const LOADING_DELAY: Duration = Duration::from_millis(150);
@@ -92,6 +98,9 @@ pub struct App {
     /// Dropping it cancels the scan.
     scan: Option<Scan>,
     scan_generation: u64,
+    /// Files dropped since the loop last went idle. One drag delivers all its files before then,
+    /// so they open together as one burst.
+    dropped: Vec<PathBuf>,
 }
 
 struct Shown {
@@ -103,6 +112,9 @@ struct Shown {
     images: Option<ImageList>,
     /// Which way the owner last moved; the preload window leans this way.
     direction: Direction,
+    advance: AdvanceLimit,
+    /// Screen rotation per path, until the app closes; across opens too.
+    turns: HashMap<PathBuf, u8>,
     cache: PreloadCache<Cached>,
     workers: Workers,
     waiting: Option<Waiting>,
@@ -126,6 +138,20 @@ impl App {
             open_at_start: (!paths.is_empty()).then_some(Open::Paths(paths)),
             scan: None,
             scan_generation: 0,
+            dropped: Vec::new(),
+        }
+    }
+
+    /// Opening routes need `App`, which owns the scan; everything else goes to `Shown::run`.
+    fn run(&mut self, command: Option<Command>, event_loop: &ActiveEventLoop) {
+        let Some(shown) = &mut self.shown else { return };
+        match command {
+            Some(Command::Open { recursive }) => {
+                if let Some(open) = shown.pick(recursive) {
+                    self.open(open);
+                }
+            }
+            command => shown.run(command, event_loop),
         }
     }
 
@@ -191,7 +217,7 @@ impl ApplicationHandler<AppEvent> for App {
         if self.shown.is_some() {
             return;
         }
-        let attributes = Window::default_attributes().with_title("SuperSlide-RS");
+        let attributes = Window::default_attributes().with_title(TITLE);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(e) => return fail(event_loop, &format!("Cannot open a window: {e}")),
@@ -210,8 +236,10 @@ impl ApplicationHandler<AppEvent> for App {
             // Fails only once the event loop has exited, when nobody wants the result.
             let _ = proxy.send_event(AppEvent::Decoded { path, result });
         });
-        // Preferences are not loaded yet; the default budget stands in.
-        let budget = u64::from(Preferences::default().preload_budget_mb) << 20;
+        // Preferences are not loaded yet; the defaults stand in.
+        let preferences = Preferences::default();
+        let budget = u64::from(preferences.preload_budget_mb) << 20;
+        let advance_limit = Duration::from_millis(preferences.advance_limit_ms.into());
         let egui = egui::Context::default();
         let egui_input = egui_winit::State::new(
             egui.clone(),
@@ -232,6 +260,8 @@ impl ApplicationHandler<AppEvent> for App {
             },
             images: None,
             direction: Direction::Forward,
+            advance: AdvanceLimit::new(advance_limit),
+            turns: HashMap::new(),
             cache: PreloadCache::new(budget),
             workers,
             waiting: None,
@@ -293,10 +323,19 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => shown.modifiers = modifiers.state(),
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                let command = keymap::for_key(&event.logical_key, shown.modifiers, event.repeat);
-                shown.run(command, event_loop);
-            }
+            WindowEvent::KeyboardInput { event, .. } => match event.state {
+                ElementState::Pressed => {
+                    let command =
+                        keymap::for_key(&event.logical_key, shown.modifiers, event.repeat);
+                    self.run(command, event_loop);
+                }
+                ElementState::Released => {
+                    if let Some(direction) = keymap::released(&event.logical_key) {
+                        shown.advance.released(direction);
+                    }
+                }
+            },
+            WindowEvent::DroppedFile(path) => self.dropped.push(path),
             WindowEvent::CursorMoved { position, .. } => {
                 shown.cursor = [position.x as f32, position.y as f32];
                 let command = shown.mouse.moved(shown.cursor);
@@ -310,7 +349,7 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                     ElementState::Released => shown.mouse.released(button),
                 };
-                shown.run(command, event_loop);
+                self.run(command, event_loop);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let command = keymap::for_wheel(delta, shown.cursor);
@@ -320,11 +359,18 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    /// Sleeps until a notice starts fading, `Loading…` is due or egui asks for a frame; redraws
-    /// every frame while a notice fades.
+    /// Opens a burst of drops. Sleeps until a notice starts fading, `Loading…` is due, a held key
+    /// may advance or egui asks for a frame; redraws every frame while a notice fades.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.dropped.is_empty() {
+            let paths = std::mem::take(&mut self.dropped);
+            self.open(Open::Paths(paths));
+        }
         let Some(shown) = &mut self.shown else { return };
         let now = Instant::now();
+        if let Some(direction) = shown.advance.tick(now) {
+            shown.navigate(direction);
+        }
         if let Some(waiting) = &mut shown.waiting
             && !waiting.noticed
             && now >= waiting.since + LOADING_DELAY
@@ -342,6 +388,7 @@ impl ApplicationHandler<AppEvent> for App {
             shown.notices.next_change(now),
             shown.egui_repaint_at,
             loading_at,
+            shown.advance.due(),
         ]
         .into_iter()
         .flatten()
@@ -367,8 +414,12 @@ impl Shown {
     }
 
     /// A finished scan replaces the image list. Cached images it still holds are kept, at their
-    /// new positions.
+    /// new positions. An open that found nothing keeps the old list: its notice says so, and the
+    /// owner carries on where they were.
     fn opened(&mut self, list: ImageList, now: Instant) {
+        if list.len() == 0 {
+            return;
+        }
         self.cache
             .reindex(list.entries().iter().map(|entry| entry.path.as_path()));
         self.images = Some(list);
@@ -381,10 +432,72 @@ impl Shown {
         let Some(images) = &mut self.images else {
             return;
         };
-        images.step(direction);
+        let wrapped = images.step(direction);
+        self.moved(direction, wrapped);
+    }
+
+    /// Does nothing unless grouped by subfolder.
+    fn jump_group(&mut self, direction: Direction) {
+        let Some(wrapped) = self
+            .images
+            .as_mut()
+            .and_then(|images| images.jump_group(direction))
+        else {
+            return;
+        };
+        self.moved(direction, wrapped);
+    }
+
+    /// The current image changed; wrapping round an end is easy to miss, so it gets a notice.
+    fn moved(&mut self, direction: Direction, wrapped: bool) {
+        let now = Instant::now();
+        if wrapped {
+            let text = match direction {
+                Direction::Forward => "Wrapped to the first image",
+                Direction::Backward => "Wrapped to the last image",
+            };
+            self.notices.notify(text, now);
+            self.window.request_redraw();
+        }
         self.direction = direction;
         self.retarget();
-        self.show_current(Instant::now());
+        self.show_current(now);
+    }
+
+    /// Re-sorts in memory; the current image stays current, so nothing on screen changes but the
+    /// notice. The preload window moves to the current image's new neighbours.
+    fn reorder(&mut self, change: impl FnOnce(Order) -> Order) {
+        let Some(images) = &mut self.images else {
+            return;
+        };
+        let order = change(images.order());
+        images.set_order(order);
+        self.cache
+            .reindex(images.entries().iter().map(|entry| entry.path.as_path()));
+        self.retarget();
+        self.notices
+            .notify_as(ORDER_NOTICE, describe(order), Instant::now());
+        self.window.request_redraw();
+    }
+
+    /// The native dialog for O or Shift+O, opening at the current image's folder. It is modal,
+    /// so the event loop waits for it. `None` when cancelled.
+    fn pick(&self, recursive: bool) -> Option<Open> {
+        let mut dialog = rfd::FileDialog::new().set_parent(&*self.window);
+        if let Some(path) = self.showing.path() {
+            dialog = dialog.set_directory(folder(path));
+        }
+        if recursive {
+            dialog
+                .set_title("Open a folder and its subfolders")
+                .pick_folder()
+                .map(Open::Recursive)
+        } else {
+            dialog
+                .add_filter("Images", &Format::EXTENSIONS)
+                .pick_file()
+                .map(|file| Open::Paths(vec![file]))
+        }
     }
 
     /// Points the preload cache and the workers at the window around the current image.
@@ -424,24 +537,23 @@ impl Shown {
             Some(Ok(cached)) => Showing::Image {
                 path: Some(path.clone()),
                 texture: cached.texture.clone(),
-                // Screen rotation per path comes back with navigation (SSR-12).
                 view: View::new(
                     cached.texture.size(),
                     cached.orientation,
-                    0,
+                    self.turns.get(path).copied().unwrap_or(0),
                     self.window_size,
                 ),
             },
             Some(Err(error)) => Showing::Error {
                 path: path.clone(),
-                file_name: path
-                    .file_name()
-                    .unwrap_or(path.as_os_str())
-                    .to_string_lossy()
-                    .into_owned(),
+                file_name: file_name(path),
                 reason: error.to_string(),
             },
         };
+        // The title follows the screen, not the image list, so it never names an image still
+        // loading.
+        self.window
+            .set_title(&format!("{} — {TITLE}", file_name(path)));
         self.waiting = None;
         self.notices.dismiss(LOADING_NOTICE);
         self.window.request_redraw();
@@ -527,9 +639,41 @@ impl Shown {
                 self.window.set_fullscreen(None)
             }
             Command::LeaveFullscreenOrQuit => event_loop.exit(),
-            // Shows the image itself once it is ready; nothing to redraw until then.
-            Command::Next => return self.navigate(Direction::Forward),
-            Command::Previous => return self.navigate(Direction::Backward),
+            // Each shows the image itself once it is ready; nothing to redraw until then.
+            Command::Advance { direction, repeat } => {
+                let now = Instant::now();
+                if !repeat {
+                    self.advance.pressed(now);
+                } else if !self.advance.repeated(direction, now) {
+                    return;
+                }
+                return self.navigate(direction);
+            }
+            Command::JumpGroup(direction) => return self.jump_group(direction),
+            Command::Sort(key) => {
+                return self.reorder(|order| Order {
+                    mode: SortMode::By(key),
+                    ..order
+                });
+            }
+            Command::Shuffle => {
+                return self.reorder(|order| Order {
+                    mode: SortMode::new_shuffle(),
+                    ..order
+                });
+            }
+            Command::ReverseSort => {
+                return self.reorder(|order| Order {
+                    reversed: !order.reversed,
+                    ..order
+                });
+            }
+            Command::ToggleGrouping => {
+                return self.reorder(|order| Order {
+                    grouped: !order.grouped,
+                    ..order
+                });
+            }
             // View commands do nothing on an error card.
             Command::Pan(by) => self.view().into_iter().for_each(|view| view.pan(by)),
             Command::Zoom { factor, anchor } => self
@@ -537,7 +681,15 @@ impl Shown {
                 .into_iter()
                 .for_each(|view| view.zoom(factor, anchor)),
             Command::Fit => self.view().into_iter().for_each(View::fit),
-            Command::Rotate(turn) => self.view().into_iter().for_each(|view| view.rotate(turn)),
+            Command::Rotate(turn) => {
+                if let Showing::Image { path, view, .. } = &mut self.showing {
+                    view.rotate(turn);
+                    // The stand-in has no path, so its rotation is not kept.
+                    if let Some(path) = path {
+                        self.turns.insert(path.clone(), view.turns());
+                    }
+                }
+            }
             #[cfg(debug_assertions)]
             Command::TestNotice => self.notices.notify("Test notice", Instant::now()),
             Command::ToggleMagnificationFilter => {
@@ -548,6 +700,13 @@ impl Shown {
         }
         self.window.request_redraw();
     }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Startup failures come before any overlay exists, and release builds have no console, so a

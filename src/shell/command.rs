@@ -9,8 +9,12 @@ use crate::view::domain::{Anchor, PanBy, Turn};
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[expect(dead_code, reason = "scaffold: most commands arrive with later issues")]
 pub enum Command {
-    Next,
-    Previous,
+    /// Next or previous image. `repeat` is key repeat from a held Space or Backspace, which the
+    /// advance limit paces; a press or click always advances.
+    Advance {
+        direction: Direction,
+        repeat: bool,
+    },
     /// First image of the adjacent group; does nothing unless grouped by subfolder.
     JumpGroup(Direction),
     ToggleSlideshow,

@@ -13,6 +13,9 @@ pub enum Format {
 }
 
 impl Format {
+    /// Every extension `from_path` accepts, for the open dialog's filter.
+    pub const EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "tga", "bmp"];
+
     /// From the extension, case-insensitive; `None` for anything else. This is what makes a file
     /// an image to the scan.
     pub fn from_path(path: &Path) -> Option<Self> {
@@ -92,6 +95,10 @@ mod tests {
         }
         for name in ["a.gif", "a.webp", "a.jpg.txt", "jpg", "a."] {
             assert!(Format::from_path(Path::new(name)).is_none(), "{name}");
+        }
+        for extension in Format::EXTENSIONS {
+            let name = format!("a.{extension}");
+            assert!(Format::from_path(Path::new(&name)).is_some(), "{name}");
         }
     }
 

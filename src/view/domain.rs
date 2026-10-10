@@ -96,11 +96,7 @@ impl View {
         }
     }
 
-    /// Read when leaving an image, so its screen rotation survives navigating away and back.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "scaffold: read once navigation exists")
-    )]
+    /// Read after each rotation, so screen rotation survives navigating away and back.
     pub fn turns(&self) -> u8 {
         self.turns
     }
