@@ -1,6 +1,6 @@
 # Architecture
 
-The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* and *Clipboard* describe SSR-15 and SSR-16 as built and verified. *Files and persistence* is still the target for phase 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
+The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* and *Clipboard* describe SSR-15 and SSR-16 as built and verified. *Files and persistence* and *Help overlay* are still the target for phase 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
 
 ## Shape
 
@@ -171,6 +171,17 @@ Delete, M and C act on the image on screen, error cards included, even while the
 - While it shows (`Shown::pasted`), decodes finishing do not replace it. The next navigation, slideshow step or group jump returns to the image list's current image, the one it covered, rather than stepping past it. An open replaces it. A Delete or move finishing meanwhile still updates the image list, and an emptied list leaves the clipboard image on screen.
 - On the clipboard image, file actions show `This image is not a file` and Ctrl+C shows `This image is already on the clipboard`. An empty or text-only clipboard gives `No image on the clipboard`.
 - Measured on an RTX 3070, release build: a JPEG with EXIF orientation 6, turned once with R and copied, pasted into Paint 400 × 200 with its four quadrant colours where the screen showed them. A 50 MP JPEG (8660 × 5773) reached the clipboard 1.35 s after Ctrl+C, the PNG encode being most of it; the app's peak working set was 883 MB, preload cache included. An image put on the clipboard as Win+Shift+S does (PNG plus bitmap) pasted and showed; Space returned to the image it covered; Delete and Ctrl+C on it changed no file and showed their notices.
+
+## Help overlay
+
+Target design for SSR-21 and SSR-22.
+
+- **One table.** `shell::keymap::BINDINGS` lists every binding: its keys as shown, what it does, a section (Navigate, View, Order, Files, Clipboard, Window), and probe inputs with the `Command` each must give. Matching stays the `match` in `for_key`, and tests hold the two together:
+  - every probe gives its command;
+  - an exhaustive `match` over `Command` makes a new command need a row;
+  - [keymap.md](keymap.md)'s table must equal `BINDINGS` row for row.
+- **The overlay.** `?` toggles an egui panel listing `BINDINGS` by section, with a filter box that `/` focuses. Filtering (case-insensitive substring over keys and description) is `help::domain`; drawing is `help::presentation`. The row type lives in `help::domain` so `shell` hands rows inward.
+- **It is modal.** While it is open, `shell::app` routes all input to it before the keymap. Arrows, PgUp/PgDn, Home/End and the wheel scroll the list. Esc clears the filter, then closes the overlay. Clicks on the image do nothing. The slideshow and notices carry on. The preferences screen (SSR-18) uses the same routing.
 
 ## Preference defaults
 

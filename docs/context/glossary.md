@@ -12,6 +12,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Fit | The zoom level at which the whole image fits the window; every image opens at fit. | | |
 | Folder filter | Folder names excluded when opening a folder. | family filter, excluded folders | |
 | Group by subfolder | Ordering that keeps each subfolder's images together, sorted by the sort mode within each group; Ctrl+Left/Right jumps between groups. | | `Order::grouped`, `ImageList::jump_group` |
+| Help overlay | The panel ? opens over the image, listing every binding, scrollable and filterable with /. While open it takes all input. | cheat sheet, shortcuts screen | `help` slice; rows are `shell::keymap::BINDINGS` |
 | Image | A JPG, PNG, TGA or BMP file the viewer can show. | photo, slide, picture | |
 | Image list | The ordered images from the last open, after the folder filter, sort mode and grouping are applied. | playlist | `ImageList`; its order is `Order` |
 | Info overlay | Text drawn over the image; I cycles it through none, filename only and full details. | | |
