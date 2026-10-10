@@ -1,0 +1,25 @@
+# Release notes, built by git-cliff from the commit messages since the last tag.
+# Only feat and fix commits reach readers; docs, refactor and chore are for the repo.
+
+[changelog]
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | trim | upper_first }}\
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+# Issue keys point at a private tracker readers cannot open.
+commit_preprocessors = [{ pattern = '\s*\(SSR-\d+\)', replace = "" }]
+commit_parsers = [
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Fixes" },
+  { message = ".*", skip = true },
+]
+tag_pattern = "v[0-9].*"
