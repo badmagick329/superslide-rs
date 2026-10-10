@@ -2,7 +2,7 @@
 
 #![expect(
     dead_code,
-    reason = "scaffold: preferences are read once the app loop exists"
+    reason = "scaffold: fields with no reader yet are read once SSR-18 loads the file"
 )]
 
 use serde::{Deserialize, Serialize};

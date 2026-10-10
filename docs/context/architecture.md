@@ -1,6 +1,6 @@
 # Architecture
 
-Target design for v1. The slices exist as scaffolds holding their core types; as each slice's issue lands, rewrite its section to describe the code as built, and point at the code rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
+The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code. *Files and persistence* and *Clipboard* are still the target for phases 2 and 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
 
 ## Shape
 
@@ -26,10 +26,10 @@ A layer that grows past one concern becomes a file with submodules beside it (`l
 ## Threads
 
 - **Main thread**: the winit event loop, all state, all wgpu calls, egui. Nothing on it blocks on decoding or scanning; the only blocking calls are the native file and folder dialogs, which are modal by nature.
-- **Decode workers**: `min(available_parallelism - 1, 4)` threads, at least 1, taking the highest-priority job from one shared queue (`load::infrastructure::workers::Workers`). A decoder panic is caught and becomes that file's error, so a hostile file costs one image, not a worker. Dropping `Workers` stops them after their current decode.
-- **Scan thread**: one per open, walking the filesystem; sends the finished, sorted image list back, plus progress counts for a notice. Dropping the `browse::infrastructure::Scan` handle cancels it, and the app tags each scan's events with a generation number, so a newer open replaces an older one and its late events are ignored.
+- **Decode workers**: `min(available_parallelism - 1, 4)` threads, at least 1, taking the highest-priority job from one shared queue (`Workers` in [workers.rs](../../src/load/infrastructure/workers.rs)). A decoder panic is caught and becomes that file's error, so a hostile file costs one image, not a worker. Dropping `Workers` stops them after their current decode.
+- **Scan thread**: one per open, walking the filesystem; sends the finished, sorted image list back, plus progress counts for a notice. Dropping the `Scan` handle ([browse/infrastructure.rs](../../src/browse/infrastructure.rs)) cancels it, and the app tags each scan's events with a generation number, so a newer open replaces an older one and its late events are ignored.
 
-Workers and the scan thread send `shell::app::AppEvent`s through the event loop's `EventLoopProxy`, which also wakes the loop. GPU upload happens on the main thread when the result arrives, and the CPU pixels are dropped right after.
+Workers and the scan thread send `AppEvent`s ([app.rs](../../src/shell/app.rs)) through the event loop's `EventLoopProxy`, which also wakes the loop. GPU upload happens on the main thread when the result arrives, and the CPU pixels are dropped right after.
 
 ## Image change
 
@@ -50,7 +50,8 @@ The policy is [preload.rs](../../src/load/domain/preload.rs), generic over what 
 - The image on screen is shared (`Rc`) between the cache and the screen, so evicting it does not free it mid-display.
 - Debug builds log the cache's size to stderr after each result.
 - Measured on an RTX 3070, debug build, 200 JPEGs of 6000 × 4000 (122 MB of texture each): paging forward and backward at 2 presses a second for a minute, every image was on screen within 50 ms of the key, except one cold image just after starting backwards. The cache held 976 MB throughout; Task Manager's dedicated GPU memory stayed flat at about 1.5 GB, which is 274 MB for the app with no image, the cache, and wgpu allocator and staging slack.
-- Ctrl+C re-decodes the file.
+- Measured on the same PC, release build, the SSR-14 set (30 JPEGs of 8660 × 5773, 267 MB of texture each, so the preload window alone is past the budget): 60 presses of Space about 0.75 s apart, two laps with wraps, every image on screen within 50 ms of the key; dedicated GPU memory flat at 1.67 GB.
+- Ctrl+C (SSR-16) will re-decode the file rather than use the cache; see *Clipboard*.
 
 ## Decoding
 
@@ -75,6 +76,7 @@ Built in the `load` slice: [infrastructure.rs](../../src/load/infrastructure.rs)
 - `Renderer::upload` writes pixels in slices of about 16 MB, since `write_texture` stages each call in one buffer and wgpu's default buffer limit is 256 MB. It blocks until the GPU finishes, so the stderr log of each upload's time is real and staging memory is freed before the next upload. Measured on an RTX 3070, release build: 48 MP in 53–75 ms, warm.
 - Until the first image opens, a generated image stands in: a checkerboard, or with `SUPERSLIDE_STAND_IN=stripes` an 8000 × 6000 image of 1 px stripes for checking moiré and upload time; `white` and `black` are solid, for checking overlay legibility.
 - One quad, one draw, no vertex buffer; on an error card, no draw, just the black clear under egui. A uniform holds a 2×2 matrix and offset from `view` (`view::domain::Transform`, which documents the coordinates) plus the window size, mapping the quad to window pixels. EXIF orientation (including its mirrorings) and screen rotation are both folded into that matrix.
+- Measured (release, `stripes.png` from the SSR-14 set, panned by drag and arrows in a window smaller than the image): at 0.25× native every pixel reads 188, so no moiré or shimmer. Between mip levels the 1 px stripes are a worst case trilinear does not fully hide: at 0.6× a fine beat pattern of 164–209 remains.
 - Sampling: trilinear by default. Ctrl+F switches magnification to nearest, for sharp pixels at high zoom; minification stays mipmapped linear so a shrunk image never aliases. The quad's bind group 0 holds the uniforms and sampler, one prebuilt group per filter, so the toggle rebuilds nothing; group 1 is the image.
 - egui (`egui-winit` for input, `egui-wgpu` for painting) draws on the same device after the image, in the same render pass. egui's texture changes are applied even on a skipped frame, or a font atlas sent then would never arrive.
 
@@ -102,7 +104,7 @@ Built in [keymap.rs](../../src/shell/keymap.rs) as `keymap::Mouse`. A press that
 Built as `AdvanceLimit` in [advance.rs](../../src/browse/domain/advance.rs) and `Slideshow` in [slideshow.rs](../../src/browse/domain/slideshow.rs). `App::about_to_wait` ticks both and sleeps until the sooner of their deadlines through `ControlFlow::WaitUntil`.
 
 - A press of Space or Backspace, or a click, always advances. Key repeat counts only as proof the key is still down: a repeat after the limit advances at once; an earlier one is held and advances the moment the limit passes (`AdvanceLimit::due`, which `App::about_to_wait` sleeps until), so the pace is the limit itself, not the limit rounded up to the keyboard's repeat rate. Letting the key go drops a held repeat. A key whose release is never seen advances at most once more, since only a repeat arms the timer.
-- Measured: holding Space for 10 s over 24 MP JPEGs advanced 20 times, one every 500 ms.
+- Measured: holding Space for 10 s over 24 MP JPEGs advanced 20 times, one every 500 ms. Release build, 50 MP JPEGs, title polled every millisecond: 20 changes in 10.0 s, gaps 484–517 ms, mean 500.8. Wake-ups land up to a frame late, and a late one shortens the next gap by as much, since the clock restarts at `due`: the k-th advance never comes before k limits after the press.
 - A toggles the slideshow, with a `Slideshow on` / `Slideshow off` notice; it does nothing before an image list is open. It advances every slideshow interval, wrapping at the end with the usual notice, but only once the next image is in the preload cache (decoded or failed). Past the interval, a next image still decoding holds the current one on screen: no `Loading…`, and no wake-up either, since the decode result is itself an event and `about_to_wait` runs after it. A list of one image never advances.
 - Every image change restarts the interval (`Shown::moved`), manual or not, and the interval after a wait is a full one, so each image stays up at least the interval. Sorting does not restart it. An open that replaces the image list stops the slideshow with `Slideshow off`; one that finds nothing leaves it running.
 - Measured (debug build, 24 MP JPEGs): changes 10.0 s apart; Space at 25.0 s changed the image and the next change came at 35.0 s. S just before the interval ended put an undecoded image next: the slideshow held the current one 1.1 s past the interval, with no `Loading…`.
@@ -150,6 +152,8 @@ Ctrl+V shows the clipboard image in place of the current image without adding it
 
 ## Preference defaults
 
+`Preferences::default` ([prefs/domain.rs](../../src/prefs/domain.rs)). `shell::app` reads the advance limit, slideshow interval, folder filter and preload budget from it until the preferences file (SSR-18) exists.
+
 | Preference | Default |
 | --- | --- |
 | Advance limit | 500 ms |
@@ -165,5 +169,6 @@ Ctrl+V shows the clipboard image in place of the current image without adding it
 - `[profile.dev.package."*"] opt-level = 3`: unoptimised decoders take seconds per 50 MP JPEG and make dev builds unusable.
 - Release: `lto = "thin"`, `codegen-units = 1`.
 - Toolchain: stable, edition 2024.
+- `cargo run --release --example make_fixtures -- <dir>` ([make_fixtures.rs](../../examples/make_fixtures.rs)) writes the phase 1 acceptance set into a directory outside the repo: 30 numbered 50 MP JPEGs (every fifth portrait) in `50mp/`, and `stripes.png`, the stripe stand-in as a file. It is generated, never committed.
 - `wgpu` and `egui-wgpu` build without default features, so only the Dx12 backend compiles; `image` builds only PNG, TGA and BMP, since JPEG goes through `zune-jpeg`; tests add its `jpeg` feature as a dev-dependency to encode JPEGs, which the shipped build does not compile. The defaults would also compile Vulkan, GL, Metal, WebGL, AVIF and WebP support the viewer never uses.
 - A scaffolded module carries `#![expect(dead_code, reason = "scaffold: …")]`. Once the module is wired up, the expectation goes unfulfilled and `clippy -D warnings` fails: delete the attribute then.
