@@ -47,9 +47,17 @@ Navigation wraps from the last image to the first and back, with a notice saying
 
 ## Decoding
 
-- Formats by extension, case-insensitive: `jpg`, `jpeg`, `png`, `tga`, `bmp`. JPEG uses `zune-jpeg`; the rest use `image`.
-- EXIF orientation is read (JPEG only) and returned beside the pixels; the display path never rotates pixels on the CPU (only Ctrl+C does, see *Clipboard*).
-- An image whose width or height exceeds the device's `max_texture_dimension_2d` is downscaled on the worker, keeping aspect, with `fast_image_resize`. The limit is read once at startup and passed to workers.
+Built in [decode.rs](../../src/decode.rs): `decode(path, max_dim)` returns `Decoded` (RGBA8 pixels, their size, the original size for the info overlay, EXIF orientation) or a `DecodeError`. Not yet called by the app; the preload cache's workers will call it.
+
+- Formats by extension, case-insensitive: `jpg`, `jpeg`, `png`, `tga`, `bmp`. `decode::Format::from_path` is the one list; the scan's `library::is_image` asks it. JPEG uses `zune-jpeg`; the rest use `image`.
+- The leading bytes must confirm the extension. Another known format's signature gives `Misnamed: a PNG file, not JPEG`; TGA has no signature, so only another format's signature rejects a `.tga`. Browsers do save misnamed files: one of 101 in the owner's Downloads was a PNG named `.jpg`.
+- `DecodeError` is `Io`, `Unsupported` (misnamed, too large) or `Corrupt` (empty, wrong content, damaged, cut short); its `Display` is the error card's one line.
+- Images over 2^28 pixels (1 GiB as RGBA) are refused from the header, before any pixel buffer exists. zune-jpeg's own 16384 px per side cap is lifted; `image`'s 512 MiB allocation cap is raised to match.
+- A cut-short JPEG is an error, not a grey-filled image. zune-jpeg's lenient mode reports success on those and its strict mode also rejects stray bytes some cameras write, so decoding stays lenient and `scan_is_complete` checks for an EOI after the first top-level SOS, skipping segments by length because an EXIF thumbnail carries its own SOS and EOI.
+- EXIF orientation is read (JPEG only, `kamadak-exif`) and returned beside the pixels; missing or invalid tags mean `Normal`. The display path never rotates pixels on the CPU (only Ctrl+C does, see *Clipboard*).
+- An image whose width or height exceeds `max_dim` (the device's `max_texture_dimension_2d`, read once at startup) is downscaled, keeping aspect, with `fast_image_resize` (Lanczos3, alpha premultiplied); the long side lands on `max_dim` exactly.
+- Measured on the owner's PC, release build: an 18.7 MB, 8660 × 5773 (50 MP) JPEG in 400 ms.
+- The orientation fixtures in `tests/fixtures/` are 8 × 4 JPEGs, left half red, written by Windows GDI+, so the EXIF they carry comes from a writer independent of the decoder.
 
 ## Rendering
 
@@ -141,5 +149,5 @@ Ctrl+V shows the clipboard image in place of the current image without adding it
 - `[profile.dev.package."*"] opt-level = 3`: unoptimised decoders take seconds per 50 MP JPEG and make dev builds unusable.
 - Release: `lto = "thin"`, `codegen-units = 1`.
 - Toolchain: stable, edition 2024.
-- `wgpu` and `egui-wgpu` build without default features, so only the Dx12 backend compiles; `image` builds only PNG, TGA and BMP, since JPEG goes through `zune-jpeg`. The defaults would also compile Vulkan, GL, Metal, WebGL, AVIF and WebP support the viewer never uses.
+- `wgpu` and `egui-wgpu` build without default features, so only the Dx12 backend compiles; `image` builds only PNG, TGA and BMP, since JPEG goes through `zune-jpeg`; tests add its `jpeg` feature as a dev-dependency to encode JPEGs, which the shipped build does not compile. The defaults would also compile Vulkan, GL, Metal, WebGL, AVIF and WebP support the viewer never uses.
 - A scaffolded module carries `#![expect(dead_code, reason = "scaffold: …")]`. Once the module is wired up, the expectation goes unfulfilled and `clippy -D warnings` fails: delete the attribute then.

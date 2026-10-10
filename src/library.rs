@@ -13,8 +13,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use walkdir::WalkDir;
 
-/// The only files that are images, matched case-insensitively.
-const EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "tga", "bmp"];
+use crate::decode::Format;
+
 /// Progress counts go out at most this often; a scan that finishes sooner sends none, so a quick
 /// open never flashes a `Scanning…` notice.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -290,14 +290,9 @@ fn split_mix_64(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// Decided by extension alone: the scan never opens files.
 pub fn is_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|extension| {
-            EXTENSIONS
-                .iter()
-                .any(|known| extension.eq_ignore_ascii_case(known))
-        })
+    Format::from_path(path).is_some()
 }
 
 /// What to scan; one per opening route in `docs/context/architecture.md` *Opening*.

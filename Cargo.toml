@@ -30,6 +30,8 @@ winit = "0.30.13"
 zune-jpeg = "0.5.15"
 
 [dev-dependencies]
+# Tests encode JPEGs to decode; dev-dependency features stay out of the shipped build.
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 tempfile = "3.27.0"
 
 # Unoptimised decoders take seconds per 50 MP JPEG, which makes dev builds unusable.
