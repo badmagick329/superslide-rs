@@ -16,7 +16,7 @@ jobs:
       # Links the C runtime into the exe, so it runs on machines without the VC++ redistributable.
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # git-cliff needs every commit and tag to find the range since the last release.
           fetch-depth: 0
