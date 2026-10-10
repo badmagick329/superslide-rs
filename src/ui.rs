@@ -23,7 +23,7 @@ const NOTICE_SHOWN: Duration = Duration::from_secs(3);
 const NOTICE_FADE: Duration = Duration::from_millis(500);
 /// More than this and the oldest goes; a burst of errors must not cover the image.
 #[cfg_attr(
-    not(debug_assertions),
+    not(any(debug_assertions, test)),
     expect(
         dead_code,
         reason = "scaffold: only the debug F9 key adds notices so far"
@@ -51,7 +51,7 @@ impl Notices {
     /// Repeating a text already shown restarts its timer and moves it to the bottom, so holding a
     /// key that fails does not stack copies.
     #[cfg_attr(
-        not(debug_assertions),
+        not(any(debug_assertions, test)),
         expect(dead_code, reason = "scaffold: only the debug F9 key calls it so far")
     )]
     pub fn notify(&mut self, text: impl Into<String>, now: Instant) {
