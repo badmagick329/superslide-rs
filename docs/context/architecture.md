@@ -63,15 +63,16 @@ Navigation wraps from the last image to the first and back, with a notice saying
 
 ## View transform
 
-State per image: zoom factor relative to fit, the image point at the window centre, quarter-turns of screen rotation. Opening an image resets to fit and centred (`view::fit`; until textures land, a generated checkerboard stands in for the image); screen rotation survives navigation away and back, per path, until the app closes.
+Built in [view.rs](../../src/view.rs) as `View`: one per shown image, holding the stored image size, window size, EXIF orientation, quarter-turns of screen rotation, zoom relative to fit, and the image point at the window centre. That point is kept in image coordinates, so a window resize keeps the same detail centred at the same zoom relative to fit. `View::transform` produces the quad uniform's matrix and offset; orientation and screen rotation compose into one signed-permutation matrix, so mirrored orientations need no special case. Opening an image starts at fit and centred (until textures land, a generated checkerboard stands in for the image); screen rotation survives navigation away and back, per path, until the app closes (`View::turns` carries it; wired with navigation).
 
-- Zoom from right-drag or the wheel anchors at the cursor; from keys, at the window centre. Zoom range 1/8× fit to 32× native pixels.
-- Pan clamps so the image cannot leave the window: an image smaller than the window on an axis stays centred on that axis.
-- Arrow-key pan moves a fixed fraction of the window per press, so speed scales with how much of the window the image fills.
+- Zoom from right-drag or the wheel anchors at the cursor; from keys, at the window centre. Zoom range 1/8× fit to 32× native pixels, except that fit stays reachable when it is already past 32× (a tiny image in a large window).
+- Pan clamps so the image cannot leave the window: an image smaller than the window on an axis stays centred on that axis; a larger one keeps covering the window. Every zoom, pan and resize reapplies the clamp.
+- R / L return to fit: after a quarter turn the old zoom and pan would land somewhere arbitrary.
+- Arrow-key pan moves 10% of the window per press and scrolls the view: Right shows more of the right side.
 
 ## Mouse
 
-A press that moves under 4 px before release is a click; more is a drag. Left click previous, right click next; left drag pans, right drag zooms (up zooms in).
+Built in [keymap.rs](../../src/keymap.rs) as `keymap::Mouse`. A press that moves at most 4 px from where it went down is a click on release; beyond that it is a drag, and the first drag step includes the slop so the image stays under the cursor. Left click previous, right click next; left drag pans, right drag zooms about where the drag started (200 px up doubles). One button at a time: a second button pressed during a gesture is ignored. The wheel zooms 1.25× per notch about the cursor; touchpad pixel scrolling counts 50 px as a notch.
 
 ## Advance limit and slideshow
 

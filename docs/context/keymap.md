@@ -1,6 +1,6 @@
 # Keymap
 
-The v1 bindings; [keymap.rs](../../src/keymap.rs) implements exactly this table, rows arriving with their issues (so far F11, Enter and Esc). Change both together.
+The v1 bindings; [keymap.rs](../../src/keymap.rs) implements exactly this table, rows arriving with their issues (so far fullscreen, zoom, pan, rotation, and clicks, which navigation will act on). Change both together.
 
 | Input | Command |
 | --- | --- |
@@ -9,7 +9,7 @@ The v1 bindings; [keymap.rs](../../src/keymap.rs) implements exactly this table,
 | Ctrl+Right / Ctrl+Left | First image of the next / previous group (group by subfolder only) |
 | A | Start or stop the slideshow |
 | Left drag, arrow keys | Pan |
-| Right drag, mouse wheel, + / - | Zoom |
+| Right drag, mouse wheel, + / - | Zoom (+ / - and each wheel notch: 1.25×; `=` also zooms in) |
 | Ctrl+ / Ctrl- | Zoom by double / half |
 | 0 | Back to fit |
 | R / L | Screen rotation right / left |
@@ -27,4 +27,4 @@ The v1 bindings; [keymap.rs](../../src/keymap.rs) implements exactly this table,
 | Ctrl+C / Ctrl+V | Copy the current image to the clipboard / show the clipboard image |
 | P | Open or close preferences |
 
-Holding Space or Backspace repeats under the advance limit; every other key acts once per press. Fullscreen is borderless on the window's current monitor, with no display mode change. Bindings the original had and v1 drops: H (no transitions to skip), t/T (contrast), Alt (no menu).
+Holding Space or Backspace repeats under the advance limit; holding an arrow, + or - repeats at the keyboard's rate; every other key acts once per press. Letter bindings and arrow pan ignore the key while Ctrl or Alt is held, leaving those chords to their own rows. Fullscreen is borderless on the window's current monitor, with no display mode change. Bindings the original had and v1 drops: H (no transitions to skip), t/T (contrast), Alt (no menu).

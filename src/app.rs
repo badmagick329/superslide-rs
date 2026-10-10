@@ -7,13 +7,15 @@ use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::ModifiersState;
 use winit::window::{Fullscreen, Window, WindowId};
 
+use crate::decode::Orientation;
 use crate::files::Transfer;
 use crate::keymap;
 use crate::library::{Direction, SortKey};
 use crate::render::Renderer;
-use crate::view::{self, Anchor, PanBy, Turn};
+use crate::view::{Anchor, PanBy, Turn, View};
 
 /// Everything the owner can ask for. Every row of `docs/context/keymap.md` maps to a variant;
 /// rows that differ only by a parameter (R / L, M / C) share one.
@@ -62,6 +64,11 @@ pub struct App {
 struct Shown {
     window: Arc<Window>,
     renderer: Renderer,
+    view: View,
+    mouse: keymap::Mouse,
+    modifiers: ModifiersState,
+    /// Last known cursor position in window pixels; wheel zoom anchors here.
+    cursor: [f32; 2],
 }
 
 impl ApplicationHandler for App {
@@ -78,7 +85,21 @@ impl ApplicationHandler for App {
             Ok(renderer) => renderer,
             Err(e) => return fail(event_loop, &format!("Cannot start drawing: {e}")),
         };
-        self.shown = Some(Shown { window, renderer });
+        let size = window.inner_size();
+        let view = View::new(
+            renderer.image_size(),
+            Orientation::Normal,
+            0,
+            [size.width, size.height],
+        );
+        self.shown = Some(Shown {
+            window,
+            renderer,
+            view,
+            mouse: keymap::Mouse::default(),
+            modifiers: ModifiersState::empty(),
+            cursor: [0.0, 0.0],
+        });
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -87,20 +108,41 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 shown.renderer.resize(size.width, size.height);
+                // A minimised window is 0 × 0; the view keeps its last real size.
+                if size.width > 0 && size.height > 0 {
+                    shown.view.set_window([size.width, size.height]);
+                }
                 shown.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
                 let size = shown.window.inner_size();
                 if size.width > 0 && size.height > 0 {
-                    let transform =
-                        view::fit(shown.renderer.image_size(), [size.width, size.height]);
-                    shown.renderer.draw(transform);
+                    shown.renderer.draw(shown.view.transform());
                 }
             }
+            WindowEvent::ModifiersChanged(modifiers) => shown.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if let Some(command) = keymap::for_key(&event.logical_key, event.repeat) {
-                    shown.run(command, event_loop);
-                }
+                let command = keymap::for_key(&event.logical_key, shown.modifiers, event.repeat);
+                shown.run(command, event_loop);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                shown.cursor = [position.x as f32, position.y as f32];
+                let command = shown.mouse.moved(shown.cursor);
+                shown.run(command, event_loop);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let command = match state {
+                    ElementState::Pressed => {
+                        shown.mouse.pressed(button, shown.cursor);
+                        None
+                    }
+                    ElementState::Released => shown.mouse.released(button),
+                };
+                shown.run(command, event_loop);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let command = keymap::for_wheel(delta, shown.cursor);
+                shown.run(command, event_loop);
             }
             _ => {}
         }
@@ -108,7 +150,8 @@ impl ApplicationHandler for App {
 }
 
 impl Shown {
-    fn run(&mut self, command: Command, event_loop: &ActiveEventLoop) {
+    fn run(&mut self, command: Option<Command>, event_loop: &ActiveEventLoop) {
+        let Some(command) = command else { return };
         let fullscreen = self.window.fullscreen().is_some();
         match command {
             // Borderless on whichever monitor holds the window: no mode switch, so no flicker.
@@ -119,8 +162,13 @@ impl Shown {
                 self.window.set_fullscreen(None)
             }
             Command::LeaveFullscreenOrQuit => event_loop.exit(),
-            _ => {}
+            Command::Pan(by) => self.view.pan(by),
+            Command::Zoom { factor, anchor } => self.view.zoom(factor, anchor),
+            Command::Fit => self.view.fit(),
+            Command::Rotate(turn) => self.view.rotate(turn),
+            _ => return,
         }
+        self.window.request_redraw();
     }
 }
 
