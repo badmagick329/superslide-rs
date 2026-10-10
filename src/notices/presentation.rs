@@ -2,12 +2,15 @@
 
 use std::time::Instant;
 
-use egui::{Align2, Color32, CornerRadius, Frame, Margin, RichText};
+use egui::{Align2, Color32, CornerRadius, Frame, Label, Margin, RichText};
 
 use crate::notices::domain::Notices;
 
 /// Gap from the window corner and between notices, in points.
 const NOTICE_SPACING: f32 = 12.0;
+/// Share of the window a notice may take before it wraps; unbounded, a long one ran off the
+/// window's left edge.
+const MAX_WIDTH_SHARE: f32 = 0.6;
 
 /// Drops expired notices and draws the rest, top-right, oldest on top. The info overlay has the
 /// bottom-left corner.
@@ -24,6 +27,7 @@ pub fn show(notices: &mut Notices, ctx: &egui::Context, now: Instant) {
         .interactable(false)
         .fade_in(false)
         .show(ctx, |ui| {
+            ui.set_max_width(ctx.content_rect().width() * MAX_WIDTH_SHARE);
             ui.spacing_mut().item_spacing.y = NOTICE_SPACING / 2.0;
             ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                 for (text, opacity) in visible {
@@ -37,7 +41,8 @@ pub fn show(notices: &mut Notices, ctx: &egui::Context, now: Instant) {
                             .corner_radius(CornerRadius::same(6))
                             .inner_margin(Margin::symmetric(12, 8))
                             .show(ui, |ui| {
-                                ui.label(RichText::new(text).size(20.0).color(Color32::WHITE));
+                                let text = RichText::new(text).size(20.0).color(Color32::WHITE);
+                                ui.add(Label::new(text).wrap());
                             });
                     });
                 }

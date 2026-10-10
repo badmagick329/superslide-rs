@@ -72,6 +72,12 @@ impl<T> PreloadCache<T> {
         }
     }
 
+    /// From the preferences screen; a lower budget evicts at once.
+    pub fn set_budget(&mut self, budget: u64) {
+        self.budget = budget;
+        self.evict();
+    }
+
     /// Bytes held, for the budget.
     pub fn used(&self) -> u64 {
         self.used
@@ -250,6 +256,19 @@ mod tests {
         assert!(cache.insert(path(51), 51, 10, Ok(())));
         assert_eq!(held(&cache), [20, 40, 50, 51]);
         assert_eq!(cache.used(), 40);
+    }
+
+    #[test]
+    fn a_lower_budget_evicts_at_once() {
+        let mut cache = cache_at(100, 100, 50, Forward);
+        for position in [50, 20, 90] {
+            assert!(cache.insert(path(position), position, 10, Ok(())));
+        }
+        cache.set_budget(20);
+        assert_eq!(held(&cache), [20, 50]);
+        // The window stays whatever the budget.
+        cache.set_budget(0);
+        assert_eq!(held(&cache), [50]);
     }
 
     #[test]

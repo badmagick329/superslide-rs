@@ -7,7 +7,6 @@ use crate::view::domain::{Anchor, PanBy, Turn};
 /// Everything the owner can ask for. Every row of `docs/context/keymap.md` maps to a variant;
 /// rows that differ only by a parameter (R / L, M / C) share one.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[expect(dead_code, reason = "scaffold: most commands arrive with later issues")]
 pub enum Command {
     /// Next or previous image. `repeat` is key repeat from a held Space or Backspace, which the
     /// advance limit paces; a press or click always advances.

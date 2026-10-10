@@ -81,6 +81,7 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
                 "g" | "G" => (Command::ToggleGrouping, false),
                 "a" | "A" => (Command::ToggleSlideshow, false),
                 "i" | "I" => (Command::CycleInfoOverlay, false),
+                "p" | "P" => (Command::TogglePreferences, false),
                 "?" => (Command::ToggleHelp, false),
                 "/" => (Command::FocusHelpFilter, false),
                 "m" | "M" => (Command::Transfer(Transfer::Move), false),
@@ -130,6 +131,16 @@ pub fn for_help_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Optio
         }
     };
     Some(HelpKey::Scroll(scroll))
+}
+
+/// While the preferences screen is open it takes every key; P and Esc close it, and every other
+/// key does nothing unless one of its fields has focus, when egui types it.
+pub fn closes_preferences(key: &Key, modifiers: ModifiersState, repeat: bool) -> bool {
+    match key {
+        // Esc closes rather than leaving fullscreen or quitting.
+        Key::Named(NamedKey::Escape) => !repeat,
+        _ => for_key(key, modifiers, repeat) == Some(Command::TogglePreferences),
+    }
 }
 
 /// Lines the help overlay scrolls per wheel notch.
@@ -251,16 +262,9 @@ impl Mouse {
 /// command each must give.
 pub struct Row {
     pub binding: Binding,
-    /// Run through `for_key`, `for_wheel` and `Mouse` by the tests. Empty only for a row whose
-    /// command is not built yet.
+    /// Run through `for_key`, `for_wheel` and `Mouse` by the tests; every row has at least one.
+    #[cfg_attr(not(test), expect(dead_code, reason = "only tests replay probes"))]
     probes: &'static [Probe],
-}
-
-impl Row {
-    /// Whether its keys do anything yet. The help overlay lists only rows that do.
-    pub fn works(&self) -> bool {
-        !self.probes.is_empty()
-    }
 }
 
 /// An input a test can replay, with the command it must give.
@@ -526,7 +530,12 @@ pub const BINDINGS: &[Row] = &[
             Command::LeaveFullscreenOrQuit,
         )],
     ),
-    row("P", "Open or close preferences", Section::Window, &[]),
+    row(
+        "P",
+        "Open or close preferences",
+        Section::Window,
+        &[char("p", NONE, Command::TogglePreferences)],
+    ),
     row(
         "?",
         "Show or hide this list of keys",
@@ -664,14 +673,33 @@ mod tests {
     }
 
     #[test]
-    fn only_unbuilt_commands_lack_probes() {
+    fn the_preferences_screen_closes_on_p_and_esc_only() {
+        let none = ModifiersState::empty();
+        let closes = |key: Key, repeat| closes_preferences(&key, none, repeat);
+        assert!(closes(Key::Character("p".into()), false));
+        assert!(closes(Key::Character("P".into()), false));
+        assert!(closes(Key::Named(NamedKey::Escape), false));
+        // A held Esc closes once, and its repeats must not quit underneath.
+        assert!(!closes(Key::Named(NamedKey::Escape), true));
+        for key in [NamedKey::Space, NamedKey::Delete, NamedKey::F11] {
+            assert!(!closes(Key::Named(key), false), "{key:?}");
+        }
+        assert!(!closes(Key::Character("?".into()), false));
+        assert!(!closes_preferences(
+            &Key::Character("p".into()),
+            ModifiersState::CONTROL,
+            false
+        ));
+    }
+
+    #[test]
+    fn every_row_has_probes() {
         let unprobed: Vec<_> = BINDINGS
             .iter()
             .filter(|row| row.probes.is_empty())
             .map(|row| row.binding.keys)
             .collect();
-        // Preferences (SSR-18) adds its probe.
-        assert_eq!(unprobed, ["P"]);
+        assert!(unprobed.is_empty(), "{unprobed:?}");
     }
 
     #[test]

@@ -19,6 +19,11 @@ impl Slideshow {
         }
     }
 
+    /// From the preferences screen. The interval running ends at the new length from its start.
+    pub fn set_interval(&mut self, interval: Duration) {
+        self.interval = interval;
+    }
+
     pub fn is_on(&self) -> bool {
         self.since.is_some()
     }

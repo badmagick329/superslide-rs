@@ -27,6 +27,11 @@ impl AdvanceLimit {
         }
     }
 
+    /// From the preferences screen. A repeat already waiting advances at the new limit.
+    pub fn set_limit(&mut self, limit: Duration) {
+        self.limit = limit;
+    }
+
     /// A press or click always advances; the caller advances, this only starts the clock.
     pub fn pressed(&mut self, now: Instant) {
         self.last = Some(now);
@@ -107,6 +112,21 @@ mod tests {
         // Let go: nothing more, however long the loop waits.
         assert_eq!(limit.due(), None);
         assert_eq!(limit.tick(start + Duration::from_secs(60)), None);
+    }
+
+    #[test]
+    fn a_new_limit_paces_the_next_advance() {
+        let mut limit = AdvanceLimit::new(LIMIT);
+        let start = Instant::now();
+        let held = Duration::from_secs(10);
+        assert_eq!(hold(&mut limit, start, held).len(), 20);
+        limit.set_limit(Duration::from_millis(250));
+        assert_eq!(hold(&mut limit, start + held, held).len(), 40);
+        // Mid-hold too: a repeat already waiting is due at the new limit.
+        limit.pressed(start);
+        assert!(!limit.repeated(Direction::Forward, start + Duration::from_millis(100)));
+        limit.set_limit(Duration::from_millis(1000));
+        assert_eq!(limit.due(), Some(start + Duration::from_millis(1000)));
     }
 
     #[test]

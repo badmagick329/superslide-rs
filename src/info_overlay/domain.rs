@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// What the info overlay shows; I cycles through these in order. A preference, so SSR-18 keeps it
+/// What the info overlay shows; I cycles through these in order. A preference, so it is kept
 /// across runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

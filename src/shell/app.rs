@@ -35,7 +35,9 @@ use crate::load::infrastructure::{decode, shrink_to_fit};
 use crate::load::presentation::error_card;
 use crate::notices::domain::Notices;
 use crate::notices::presentation::{self as notices, thousands};
-use crate::prefs::domain::Preferences;
+use crate::prefs::domain::{Preferences, Screen};
+use crate::prefs::infrastructure::PrefsFile;
+use crate::prefs::presentation as preferences;
 use crate::shell::command::Command;
 use crate::shell::keymap::{self, HelpKey};
 use crate::shell::render::{self, ImageTexture, Renderer, UiFrame};
@@ -139,8 +141,12 @@ struct Shown {
     /// The last non-zero inner size: a minimised window reports 0 × 0, which no view can fit.
     window_size: [u32; 2],
     renderer: Renderer,
-    /// Defaults until SSR-18 loads the file; I already changes `info_overlay` in it.
     preferences: Preferences,
+    /// `None` only when the executable's own path is unknown; nothing is saved then.
+    prefs_file: Option<PrefsFile>,
+    /// The preferences screen, while it is open. Like the help overlay, it takes all input
+    /// before the keymap.
+    preferences_screen: Option<Screen>,
     showing: Showing,
     images: Option<ImageList>,
     /// Which way the owner last moved; the preload window leans this way.
@@ -206,12 +212,16 @@ impl App {
         self.scan_generation += 1;
         let generation = self.scan_generation;
         let proxy = self.proxy.clone();
-        // Preferences are not loaded yet; the default folder filter stands in.
-        let folder_filter = Preferences::default().folder_filter;
-        self.scan = Some(Scan::spawn(open, &folder_filter, move |event| {
-            // Fails only once the event loop has exited, when nobody wants the result.
-            let _ = proxy.send_event(AppEvent::Scan { generation, event });
-        }));
+        // Opens start only once the window exists, and with it the preferences.
+        let Some(shown) = &self.shown else { return };
+        self.scan = Some(Scan::spawn(
+            open,
+            &shown.preferences.folder_filter,
+            move |event| {
+                // Fails only once the event loop has exited, when nobody wants the result.
+                let _ = proxy.send_event(AppEvent::Scan { generation, event });
+            },
+        ));
     }
 
     fn scanned(&mut self, event: ScanEvent) {
@@ -263,12 +273,17 @@ impl ApplicationHandler<AppEvent> for App {
         if self.shown.is_some() {
             return;
         }
+        let (prefs_file, preferences, load_problem) = PrefsFile::beside_exe();
         let attributes = Window::default_attributes().with_title(TITLE);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(e) => return fail(event_loop, &format!("Cannot open a window: {e}")),
         };
-        let renderer = match Renderer::new(window.clone()) {
+        // The same call F11 makes, on the monitor Windows placed the window on.
+        if preferences.start_fullscreen {
+            window.set_fullscreen(Some(Fullscreen::Borderless(window.current_monitor())));
+        }
+        let mut renderer = match Renderer::new(window.clone()) {
             Ok(renderer) => renderer,
             Err(e) => return fail(event_loop, &format!("Cannot start drawing: {e}")),
         };
@@ -301,8 +316,7 @@ impl ApplicationHandler<AppEvent> for App {
             // Fails only once the event loop has exited, when nobody wants the result.
             let _ = proxy.send_event(AppEvent::Clipboard(done));
         });
-        // Preferences are not loaded yet; the defaults stand in.
-        let preferences = Preferences::default();
+        renderer.magnification_filter = preferences.magnification_filter;
         let budget = u64::from(preferences.preload_budget_mb) << 20;
         let advance_limit = Duration::from_millis(preferences.advance_limit_ms.into());
         let slideshow_interval = Duration::from_secs(preferences.slideshow_interval_s.into());
@@ -320,6 +334,8 @@ impl ApplicationHandler<AppEvent> for App {
             window_size,
             renderer,
             preferences,
+            prefs_file,
+            preferences_screen: None,
             showing: Showing::Image {
                 path: None,
                 texture,
@@ -348,6 +364,12 @@ impl ApplicationHandler<AppEvent> for App {
             modifiers: ModifiersState::empty(),
             cursor: [0.0, 0.0],
         });
+        if let Some(problem) = load_problem
+            && let Some(shown) = &mut self.shown
+        {
+            let text = preferences::load_problem(&problem);
+            shown.notices.notify(text, Instant::now());
+        }
         if let Some(open) = self.open_at_start.take() {
             self.open(open);
         }
@@ -390,6 +412,10 @@ impl ApplicationHandler<AppEvent> for App {
         let egui_keeps =
             response.consumed && shown.egui.memory(|memory| memory.focused().is_some());
         if shown.help.is_some() && shown.help_input(&event, egui_keeps) {
+            shown.window.request_redraw();
+            return;
+        }
+        if shown.preferences_screen.is_some() && shown.preferences_input(&event, egui_keeps) {
             shown.window.request_redraw();
             return;
         }
@@ -452,6 +478,14 @@ impl ApplicationHandler<AppEvent> for App {
                 shown.run(command, event_loop);
             }
             _ => {}
+        }
+    }
+
+    /// A change made just before closing, such as with the preferences screen still open, is not
+    /// lost. Too late for a notice if the save fails.
+    fn exiting(&mut self, _: &ActiveEventLoop) {
+        if let Some(shown) = &mut self.shown {
+            shown.save_preferences();
         }
     }
 
@@ -539,6 +573,51 @@ impl Shown {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Input while the preferences screen is open, routed as for the help overlay: every press,
+    /// click and wheel turn stops here, and egui, which has already seen them, drives the screen.
+    fn preferences_input(&mut self, event: &WindowEvent, egui_keeps: bool) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                // A field has the key; egui types it, and Esc only leaves the field.
+                if egui_keeps {
+                    return false;
+                }
+                if keymap::closes_preferences(&event.logical_key, self.modifiers, event.repeat) {
+                    self.preferences_screen = None;
+                    self.save_preferences();
+                }
+                true
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Brings everything that reads a preference in line with `self.preferences`. The folder
+    /// filter needs nothing: the next open reads it.
+    fn apply_preferences(&mut self) {
+        let preferences = &self.preferences;
+        self.advance
+            .set_limit(Duration::from_millis(preferences.advance_limit_ms.into()));
+        self.slideshow
+            .set_interval(Duration::from_secs(preferences.slideshow_interval_s.into()));
+        self.cache
+            .set_budget(u64::from(preferences.preload_budget_mb) << 20);
+        self.renderer.magnification_filter = preferences.magnification_filter;
+    }
+
+    /// Writes the preferences file if they changed. Only a run's first failure gives a notice.
+    fn save_preferences(&mut self) {
+        let Some(file) = &mut self.prefs_file else {
+            return;
+        };
+        if let Some(error) = file.save(&self.preferences) {
+            self.notices
+                .notify(preferences::save_failed(&error), Instant::now());
+            self.window.request_redraw();
         }
     }
 
@@ -935,7 +1014,7 @@ impl Shown {
                     original: *original_size,
                     displayed: texture.size(),
                     scale: view.scale(),
-                    nearest: self.renderer.magnification_filter == MagnificationFilter::Nearest,
+                    nearest: self.preferences.magnification_filter == MagnificationFilter::Nearest,
                 };
                 (path.as_deref(), Some(pixels))
             }
@@ -981,6 +1060,12 @@ impl Shown {
         let showing = &self.showing;
         let shown_notices = &mut self.notices;
         let open_help = &mut self.help;
+        let before = self
+            .preferences_screen
+            .is_some()
+            .then(|| self.preferences.clone());
+        let edited = &mut self.preferences;
+        let screen = &mut self.preferences_screen;
         let output = self.egui.run_ui(input, |ui| {
             if let Showing::Error {
                 file_name, reason, ..
@@ -992,15 +1077,20 @@ impl Shown {
                 info_overlay::show(ui.ctx(), info_mode, details);
             }
             if let Some(open) = open_help {
-                let rows: Vec<Binding> = keymap::BINDINGS
-                    .iter()
-                    .filter(|row| row.works())
-                    .map(|row| row.binding)
-                    .collect();
+                let rows: Vec<Binding> = keymap::BINDINGS.iter().map(|row| row.binding).collect();
                 help::show(ui.ctx(), open, &rows);
+            }
+            if let Some(screen) = screen {
+                preferences::show(ui.ctx(), edited, screen);
             }
             notices::show(shown_notices, ui.ctx(), now);
         });
+        // Applied before drawing, so a filter change shows on this frame. The info overlay's
+        // details were gathered before the screen ran, so the redraw catches it up.
+        if before.is_some_and(|before| before != self.preferences) {
+            self.apply_preferences();
+            self.window.request_redraw();
+        }
         self.egui_input
             .handle_platform_output(&self.window, output.platform_output);
         // `Duration::MAX` means "no repaint needed"; adding it overflows to `None`.
@@ -1103,13 +1193,22 @@ impl Shown {
             }
             #[cfg(debug_assertions)]
             Command::TestNotice => self.notices.notify("Test notice", Instant::now()),
+            Command::TogglePreferences => {
+                self.preferences_screen = Some(Screen::new(&self.preferences));
+                // A button held as it opened must not click or drag once it closes.
+                self.mouse = keymap::Mouse::default();
+            }
+            // Both are preferences, so each press is saved, as the screen's changes are.
             Command::CycleInfoOverlay => {
                 let mode = &mut self.preferences.info_overlay;
                 *mode = mode.cycled();
+                self.save_preferences();
             }
             Command::ToggleMagnificationFilter => {
-                let filter = &mut self.renderer.magnification_filter;
+                let filter = &mut self.preferences.magnification_filter;
                 *filter = filter.toggled();
+                self.apply_preferences();
+                self.save_preferences();
             }
             _ => return,
         }

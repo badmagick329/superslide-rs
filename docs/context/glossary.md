@@ -19,7 +19,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Magnification filter | How pixels are drawn when zoomed past native size: linear (smooth) or nearest (sharp); Ctrl+F toggles it. | bilinear filtering | |
 | Notice | A short text shown over the image that fades after a few seconds, for errors, progress and confirmations. | toast, popup | |
 | Pan | Moving a zoomed image within the window by drag or arrow keys. | scroll | |
-| Preferences | The owner's persisted options, and the screen opened with P that edits them. | settings, config, options | `Preferences` |
+| Preferences | The owner's persisted options, kept in `superslide-prefs.toml` beside the executable, and the screen opened with P that edits them. | settings, config, options | `prefs` slice; the options are `Preferences`, the file `PrefsFile`, the open screen `Screen` |
 | Preload cache | Decoded images held on the GPU under a memory budget so navigation shows them without waiting. | | `PreloadCache` |
 | Preload window | The images the preload cache wants: the current image, 3 ahead and 1 behind in the direction of travel. | | `preload_window` |
 | Recursive open | Opening a folder together with all its subfolders (Shift+O); sets the sort mode to shuffle. | | |

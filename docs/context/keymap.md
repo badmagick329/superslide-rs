@@ -1,6 +1,6 @@
 # Keymap
 
-The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, and its `BINDINGS`, which the help overlay lists, repeats it row for row with sample inputs. A test fails when this table and `BINDINGS` differ, or when a sample input gives the wrong command, so change all three together. Rows are in sections (Navigate, View, Order, Files, Clipboard, Window), each one run. Every row works except P (SSR-18). egui sees input first but keeps it only while one of its widgets has focus.
+The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, and its `BINDINGS`, which the help overlay lists, repeats it row for row with sample inputs. A test fails when this table and `BINDINGS` differ, or when a sample input gives the wrong command, so change all three together. Rows are in sections (Navigate, View, Order, Files, Clipboard, Window), each one run. egui sees input first but keeps it only while one of its widgets has focus.
 
 | Input | Command |
 | --- | --- |

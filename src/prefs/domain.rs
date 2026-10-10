@@ -1,14 +1,18 @@
-//! `Preferences` and their defaults. `Session` and the TOML file arrive with SSR-18 and SSR-19.
+//! `Preferences`, their defaults and ranges, and the preferences screen's editing state. `Session`
+//! arrives with SSR-19.
 
-#![expect(
-    dead_code,
-    reason = "scaffold: fields with no reader yet are read once SSR-18 loads the file"
-)]
+use std::ops::RangeInclusive;
 
 use serde::{Deserialize, Serialize};
 
 use crate::info_overlay::domain::InfoOverlay;
 use crate::view::domain::MagnificationFilter;
+
+pub const ADVANCE_LIMIT_MS: RangeInclusive<u32> = 0..=5_000;
+/// From 1 s: at 0 the slideshow would advance as fast as images decode.
+pub const SLIDESHOW_INTERVAL_S: RangeInclusive<u32> = 1..=3_600;
+/// The preload window is kept past the budget, so even the lowest still shows every image.
+pub const PRELOAD_BUDGET_MB: RangeInclusive<u32> = 64..=65_536;
 
 /// The owner's persisted options. Defaults follow *Preference defaults* in
 /// `docs/context/architecture.md`.
@@ -44,6 +48,47 @@ impl Default for Preferences {
     }
 }
 
+impl Preferences {
+    /// Every number into its range and every folder name trimmed: the file is plain text the
+    /// owner may edit by hand.
+    pub fn clamped(self) -> Self {
+        let clamp =
+            |value: u32, range: RangeInclusive<u32>| value.clamp(*range.start(), *range.end());
+        Self {
+            advance_limit_ms: clamp(self.advance_limit_ms, ADVANCE_LIMIT_MS),
+            slideshow_interval_s: clamp(self.slideshow_interval_s, SLIDESHOW_INTERVAL_S),
+            preload_budget_mb: clamp(self.preload_budget_mb, PRELOAD_BUDGET_MB),
+            folder_filter: folder_filter(&self.folder_filter.join("\n")),
+            ..self
+        }
+    }
+}
+
+/// The preferences screen while it is open.
+#[derive(Debug)]
+pub struct Screen {
+    /// The folder filter as typed, one name per line. Kept as text, because reading it back from
+    /// `Preferences` every frame would drop the empty line a just-typed Enter makes.
+    pub folder_filter: String,
+}
+
+impl Screen {
+    pub fn new(preferences: &Preferences) -> Self {
+        Self {
+            folder_filter: preferences.folder_filter.join("\n"),
+        }
+    }
+}
+
+/// One name per line, trimmed; blank lines are dropped.
+pub fn folder_filter(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +111,36 @@ mod tests {
             Preferences::default().slideshow_interval_s
         );
         assert_eq!(prefs.folder_filter, Preferences::default().folder_filter);
+    }
+
+    #[test]
+    fn hand_edited_values_are_brought_into_range() {
+        let prefs = Preferences {
+            advance_limit_ms: 1_000_000,
+            slideshow_interval_s: 0,
+            preload_budget_mb: 1,
+            folder_filter: vec!["  private ".to_owned(), String::new(), "tmp".to_owned()],
+            ..Preferences::default()
+        }
+        .clamped();
+        assert_eq!(prefs.advance_limit_ms, 5_000);
+        assert_eq!(prefs.slideshow_interval_s, 1);
+        assert_eq!(prefs.preload_budget_mb, 64);
+        assert_eq!(prefs.folder_filter, ["private", "tmp"]);
+        assert_eq!(Preferences::default().clamped(), Preferences::default());
+    }
+
+    #[test]
+    fn the_folder_filter_is_one_name_per_line() {
+        assert_eq!(
+            folder_filter("private\n\n  Old Stuff  \r\n"),
+            ["private", "Old Stuff"]
+        );
+        assert!(folder_filter("").is_empty());
+        let screen = Screen::new(&Preferences {
+            folder_filter: vec!["a".to_owned(), "b".to_owned()],
+            ..Preferences::default()
+        });
+        assert_eq!(screen.folder_filter, "a\nb");
     }
 }

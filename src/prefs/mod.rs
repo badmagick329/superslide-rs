@@ -1,4 +1,6 @@
-//! Preferences: the owner's persisted options and their defaults. TOML load and atomic save
-//! beside the executable arrive with SSR-18.
+//! Preferences: the owner's persisted options, `superslide-prefs.toml` beside the executable, and
+//! the screen P opens to edit them.
 
 pub mod domain;
+pub mod infrastructure;
+pub mod presentation;
