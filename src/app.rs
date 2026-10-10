@@ -14,7 +14,7 @@ use crate::decode::Orientation;
 use crate::files::Transfer;
 use crate::keymap;
 use crate::library::{Direction, SortKey};
-use crate::render::Renderer;
+use crate::render::{ImageTexture, Renderer};
 use crate::view::{Anchor, PanBy, Turn, View};
 
 /// Everything the owner can ask for. Every row of `docs/context/keymap.md` maps to a variant;
@@ -64,6 +64,7 @@ pub struct App {
 struct Shown {
     window: Arc<Window>,
     renderer: Renderer,
+    image: ImageTexture,
     view: View,
     mouse: keymap::Mouse,
     modifiers: ModifiersState,
@@ -85,9 +86,11 @@ impl ApplicationHandler for App {
             Ok(renderer) => renderer,
             Err(e) => return fail(event_loop, &format!("Cannot start drawing: {e}")),
         };
+        let (image_size, pixels) = crate::render::stand_in();
+        let image = renderer.upload(image_size, &pixels);
         let size = window.inner_size();
         let view = View::new(
-            renderer.image_size(),
+            image.size(),
             Orientation::Normal,
             0,
             [size.width, size.height],
@@ -95,6 +98,7 @@ impl ApplicationHandler for App {
         self.shown = Some(Shown {
             window,
             renderer,
+            image,
             view,
             mouse: keymap::Mouse::default(),
             modifiers: ModifiersState::empty(),
@@ -117,7 +121,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let size = shown.window.inner_size();
                 if size.width > 0 && size.height > 0 {
-                    shown.renderer.draw(shown.view.transform());
+                    shown.renderer.draw(&shown.image, shown.view.transform());
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => shown.modifiers = modifiers.state(),
@@ -166,6 +170,10 @@ impl Shown {
             Command::Zoom { factor, anchor } => self.view.zoom(factor, anchor),
             Command::Fit => self.view.fit(),
             Command::Rotate(turn) => self.view.rotate(turn),
+            Command::ToggleMagnificationFilter => {
+                let filter = &mut self.renderer.magnification_filter;
+                *filter = filter.toggled();
+            }
             _ => return,
         }
         self.window.request_redraw();

@@ -48,6 +48,9 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
             match c.as_str() {
                 "+" | "=" => (zoom(factor), true),
                 "-" => (zoom(1.0 / factor), true),
+                "f" | "F" if ctrl && !modifiers.alt_key() => {
+                    (Command::ToggleMagnificationFilter, false)
+                }
                 _ if !plain => return None,
                 "0" => (Command::Fit, false),
                 "r" | "R" => (Command::Rotate(Turn::Right), false),
@@ -222,6 +225,14 @@ mod tests {
             panic!("Ctrl+ did not zoom");
         };
         assert_eq!(factor, 2.0);
+        assert_eq!(
+            for_key(&Key::Character("f".into()), ctrl, false),
+            Some(Command::ToggleMagnificationFilter)
+        );
+        assert_eq!(
+            for_key(&Key::Character("f".into()), ModifiersState::empty(), false),
+            None
+        );
         // Ctrl+R and Ctrl+arrows belong to other bindings, not rotate and pan.
         assert_eq!(for_key(&Key::Character("r".into()), ctrl, false), None);
         assert_eq!(for_key(&Key::Named(NamedKey::ArrowLeft), ctrl, false), None);

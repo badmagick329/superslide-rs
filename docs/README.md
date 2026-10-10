@@ -4,7 +4,7 @@ These documents live under `docs/` and are tracked in Git: commit document chang
 
 ## Project in one paragraph
 
-SuperSlide-RS is a Rust rebuild of Ryan Geiss's SuperSlide (2008–2009), a small, fast, keyboard-driven image viewer for Windows, built for the owner's own use; wider distribution is undecided. Core flow: open an image or folder (drag-and-drop, command line, O / Shift+O), page through the image list with Space and Backspace, zoom and pan, sort or shuffle, run a slideshow, and delete, move or copy files. It ships as one portable Windows executable; there is no deployment. Status: phase 1 under way; the window opens and shows a test checkerboard that zooms, pans, rotates and goes fullscreen; no images load yet.
+SuperSlide-RS is a Rust rebuild of Ryan Geiss's SuperSlide (2008–2009), a small, fast, keyboard-driven image viewer for Windows, built for the owner's own use; wider distribution is undecided. Core flow: open an image or folder (drag-and-drop, command line, O / Shift+O), page through the image list with Space and Backspace, zoom and pan, sort or shuffle, run a slideshow, and delete, move or copy files. It ships as one portable Windows executable; there is no deployment. Status: phase 1 under way; the window opens and shows a generated test image, mipmapped, that zooms, pans, rotates, goes fullscreen and switches to sharp pixels with Ctrl+F; no images load yet.
 
 ## Working rules for agents
 

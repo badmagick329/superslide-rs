@@ -3,6 +3,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use winit::window::Window;
@@ -20,12 +21,32 @@ pub enum MagnificationFilter {
     Nearest,
 }
 
+impl MagnificationFilter {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Linear => Self::Nearest,
+            Self::Nearest => Self::Linear,
+        }
+    }
+}
+
 /// Setting this to `1` skips the hardware adapter and runs on WARP, so the fallback path can be
 /// tested on a machine that has a GPU.
 const FORCE_WARP_VAR: &str = "SUPERSLIDE_FORCE_WARP";
 
+/// Setting this to `stripes` replaces the checkerboard stand-in with an 8000 × 6000 image of 1 px
+/// stripes, the worst case for moiré and a 48 MP upload to time.
+const STAND_IN_VAR: &str = "SUPERSLIDE_STAND_IN";
+
 /// Bytes of the `Uniforms` struct in `quad.wgsl`: a `mat2x2<f32>`, then two `vec2<f32>`.
 const UNIFORM_SIZE: usize = 32;
+
+/// Pixels go to the GPU in slices of about this many bytes. `write_texture` stages each call in
+/// one buffer, and a 50 MP image in one call (200 MB) would pass wgpu's default 256 MB buffer
+/// limit at about 64 MP.
+const UPLOAD_CHUNK_BYTES: u32 = 16 << 20;
+
+const IMAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 #[derive(Debug)]
 pub enum InitError {
@@ -49,6 +70,24 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
+/// An image on the GPU with its full mip chain. Dropping it frees the texture.
+pub struct ImageTexture {
+    size: [u32; 2],
+    bind_group: wgpu::BindGroup,
+}
+
+impl ImageTexture {
+    /// Stored pixel size, before orientation or rotation.
+    pub fn size(&self) -> [u32; 2] {
+        self.size
+    }
+
+    /// GPU memory held, counted against the preload budget.
+    pub fn bytes(&self) -> u64 {
+        texture_bytes(self.size)
+    }
+}
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -56,8 +95,14 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    image_size: [u32; 2],
+    /// Uniforms plus the sampler; one group per magnification filter, so a toggle rebuilds nothing.
+    linear_group: wgpu::BindGroup,
+    nearest_group: wgpu::BindGroup,
+    image_layout: wgpu::BindGroupLayout,
+    mip_pipeline: wgpu::RenderPipeline,
+    mip_layout: wgpu::BindGroupLayout,
+    mip_sampler: wgpu::Sampler,
+    pub magnification_filter: MagnificationFilter,
     /// The largest texture side the device accepts. `decode` downscales anything bigger.
     #[expect(
         dead_code,
@@ -124,8 +169,8 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("quad"),
+        let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("quad frame"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -137,57 +182,21 @@ impl Renderer {
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
+                sampler_entry(1),
             ],
         });
-        let shader = device.create_shader_module(wgpu::include_wgsl!("quad.wgsl"));
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("quad"),
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("quad"),
-                    bind_group_layouts: &[Some(&layout)],
-                    immediate_size: 0,
-                }),
-            ),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                // Mirroring and rotation flip the winding; no side may be culled.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(format.into())],
-            }),
-            multiview_mask: None,
-            cache: None,
+        let image_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("quad image"),
+            entries: &[texture_entry(0)],
         });
+        let pipeline = create_pipeline(
+            &device,
+            "quad",
+            wgpu::include_wgsl!("quad.wgsl"),
+            &[&frame_layout, &image_layout],
+            wgpu::PrimitiveTopology::TriangleStrip,
+            format,
+        );
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quad uniforms"),
@@ -195,33 +204,49 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let (image_size, pixels) = checkerboard();
-        let texture = upload(&device, &queue, image_size, &pixels);
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("image"),
+        let frame_group = |mag_filter| {
+            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("image"),
+                mag_filter,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            });
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("quad frame"),
+                layout: &frame_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            })
+        };
+        let linear_group = frame_group(wgpu::FilterMode::Linear);
+        let nearest_group = frame_group(wgpu::FilterMode::Nearest);
+
+        let mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mip"),
+            entries: &[texture_entry(0), sampler_entry(1)],
+        });
+        let mip_pipeline = create_pipeline(
+            &device,
+            "mip",
+            wgpu::include_wgsl!("mip.wgsl"),
+            &[&mip_layout],
+            wgpu::PrimitiveTopology::TriangleList,
+            IMAGE_FORMAT,
+        );
+        let mip_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("mip"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("quad"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &texture.create_view(&Default::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
         });
 
         Ok(Self {
@@ -231,15 +256,141 @@ impl Renderer {
             config,
             pipeline,
             uniforms,
-            bind_group,
-            image_size,
+            linear_group,
+            nearest_group,
+            image_layout,
+            mip_pipeline,
+            mip_layout,
+            mip_sampler,
+            magnification_filter: MagnificationFilter::default(),
             max_texture_dimension,
         })
     }
 
-    /// Pixel size of the image being drawn, before any transform.
-    pub fn image_size(&self) -> [u32; 2] {
-        self.image_size
+    /// Uploads RGBA pixels (sRGB, row-major, no padding) and builds the mip chain.
+    ///
+    /// Blocks until the GPU has finished: the logged time is the real upload time, and the staging
+    /// copies are freed before the next upload queues more.
+    pub fn upload(&self, size: [u32; 2], pixels: &[u8]) -> ImageTexture {
+        let [width, height] = size;
+        assert_eq!(
+            pixels.len() as u64,
+            u64::from(width) * u64::from(height) * 4,
+            "pixel buffer does not match {width} × {height}"
+        );
+        let start = Instant::now();
+        let levels = mip_level_count(size);
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("image"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: IMAGE_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+
+        let row_bytes = width * 4;
+        let chunk_rows = (UPLOAD_CHUNK_BYTES / row_bytes).max(1);
+        for top in (0..height).step_by(chunk_rows as usize) {
+            let rows = chunk_rows.min(height - top);
+            let start = top as usize * row_bytes as usize;
+            let end = start + rows as usize * row_bytes as usize;
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: top, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &pixels[start..end],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row_bytes),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width,
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let level_view = |level| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                base_mip_level: level,
+                mip_level_count: Some(1),
+                ..Default::default()
+            })
+        };
+        for level in 1..levels {
+            let source = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mip"),
+                layout: &self.mip_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&level_view(level - 1)),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.mip_sampler),
+                    },
+                ],
+            });
+            let target = level_view(level);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mip"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.mip_pipeline);
+            pass.set_bind_group(0, &source, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        let submission = self.queue.submit([encoder.finish()]);
+        // An error here means the device is lost; the next frame's surface reconfigure handles it.
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        });
+
+        let image = ImageTexture {
+            size,
+            bind_group: self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("quad image"),
+                layout: &self.image_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &texture.create_view(&Default::default()),
+                    ),
+                }],
+            }),
+        };
+        eprintln!(
+            "superslide: uploaded {width} × {height} ({levels} mip levels, {} MB) in {} ms",
+            image.bytes() >> 20,
+            start.elapsed().as_millis()
+        );
+        image
     }
 
     /// A minimised window reports 0 × 0, which the surface cannot take; drawing is skipped until
@@ -253,7 +404,7 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    pub fn draw(&mut self, transform: Transform) {
+    pub fn draw(&mut self, image: &ImageTexture, transform: Transform) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             // Present this one, then reconfigure so the next frame matches the surface again.
@@ -288,7 +439,12 @@ impl Renderer {
                 ..Default::default()
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
+            let frame_group = match self.magnification_filter {
+                MagnificationFilter::Linear => &self.linear_group,
+                MagnificationFilter::Nearest => &self.nearest_group,
+            };
+            pass.set_bind_group(0, frame_group, &[]);
+            pass.set_bind_group(1, &image.bind_group, &[]);
             pass.draw(0..4, 0..1);
         }
         self.queue.submit([encoder.finish()]);
@@ -314,6 +470,83 @@ async fn request_adapter(
     instance.request_adapter(&options(true)).await
 }
 
+fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
+    }
+}
+
+/// A pipeline with no vertex buffers, entry points `vs_main` and `fs_main`, and no blending.
+fn create_pipeline(
+    device: &wgpu::Device,
+    label: &str,
+    shader: wgpu::ShaderModuleDescriptor<'_>,
+    layouts: &[&wgpu::BindGroupLayout],
+    topology: wgpu::PrimitiveTopology,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(shader);
+    let layouts: Vec<_> = layouts.iter().copied().map(Some).collect();
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(
+            &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &layouts,
+                immediate_size: 0,
+            }),
+        ),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology,
+            // Mirroring and rotation flip the quad's winding; no side may be culled.
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(format.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// Halving down to 1 × 1 on the longer side: `floor(log2(max(w, h))) + 1`.
+fn mip_level_count([width, height]: [u32; 2]) -> u32 {
+    u32::BITS - width.max(height).leading_zeros()
+}
+
+/// The full chain adds a third to the base level; rounding on odd sizes is ignored.
+fn texture_bytes([width, height]: [u32; 2]) -> u64 {
+    u64::from(width) * u64::from(height) * 4 * 4 / 3
+}
+
 /// Packs `Uniforms` from `quad.wgsl`. A `mat2x2<f32>` is two 8-byte columns, so the layout has no
 /// padding.
 fn uniform_bytes(transform: Transform, config: &wgpu::SurfaceConfiguration) -> [u8; UNIFORM_SIZE] {
@@ -327,42 +560,17 @@ fn uniform_bytes(transform: Transform, config: &wgpu::SurfaceConfiguration) -> [
     bytes
 }
 
-fn upload(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    size: [u32; 2],
-    pixels: &[u8],
-) -> wgpu::Texture {
-    let extent = wgpu::Extent3d {
-        width: size[0],
-        height: size[1],
-        depth_or_array_layers: 1,
-    };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("image"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    queue.write_texture(
-        texture.as_image_copy(),
-        pixels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(size[0] * 4),
-            rows_per_image: None,
-        },
-        extent,
-    );
-    texture
+/// A generated image until decoding exists: the checkerboard, or the stripes `STAND_IN_VAR`
+/// selects.
+pub fn stand_in() -> ([u32; 2], Vec<u8>) {
+    if std::env::var(STAND_IN_VAR).is_ok_and(|v| v == "stripes") {
+        stripes()
+    } else {
+        checkerboard()
+    }
 }
 
-/// A stand-in image until decoding exists. It is 3:2, not square, so a stretched fit shows as
-/// non-square cells.
+/// 3:2, not square, so a stretched fit shows as non-square cells.
 fn checkerboard() -> ([u32; 2], Vec<u8>) {
     const CELL: u32 = 32;
     let size = [CELL * 12, CELL * 8];
@@ -377,4 +585,44 @@ fn checkerboard() -> ([u32; 2], Vec<u8>) {
         })
         .collect();
     (size, pixels)
+}
+
+/// 1 px black-and-white stripes, vertical on the left half and horizontal on the right. Any
+/// shrunk view should be flat sRGB 188 grey; moiré shows as bands.
+fn stripes() -> ([u32; 2], Vec<u8>) {
+    let size: [u32; 2] = [8000, 6000];
+    let mut pixels = Vec::with_capacity(size[0] as usize * size[1] as usize * 4);
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            let stripe = if x < size[0] / 2 { x } else { y };
+            let value = if stripe.is_multiple_of(2) { 255 } else { 0 };
+            pixels.extend_from_slice(&[value, value, value, 255]);
+        }
+    }
+    (size, pixels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mip_chains_halve_the_longer_side_down_to_one_pixel() {
+        assert_eq!(mip_level_count([1, 1]), 1);
+        assert_eq!(mip_level_count([1, 2]), 2);
+        assert_eq!(mip_level_count([1, 1000]), 10);
+        assert_eq!(mip_level_count([1024, 1]), 11);
+        // Odd sizes round down at each halving: 1023 → 511 → … → 1 is 10 levels, 1025 is 11.
+        assert_eq!(mip_level_count([1023, 7]), 10);
+        assert_eq!(mip_level_count([5, 1025]), 11);
+        assert_eq!(mip_level_count([8192, 8192]), 14);
+        assert_eq!(mip_level_count([16384, 3]), 15);
+    }
+
+    #[test]
+    fn texture_bytes_count_the_mip_chain() {
+        assert_eq!(texture_bytes([1000, 750]), 4_000_000);
+        // The largest texture the device takes: 16 × its pixels overflows 32 bits.
+        assert_eq!(texture_bytes([16384, 16384]), 1_431_655_765);
+    }
 }
