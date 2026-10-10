@@ -1,25 +1,25 @@
 # Architecture
 
-Target design for v1, written before the code. As each module lands, rewrite its section to describe the code as built, and point at the code rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
+Target design for v1. The modules exist as scaffolds holding their core types; as each module's issue lands, rewrite its section to describe the code as built, and point at the code rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
 
 ## Shape
 
-One binary crate, `superslide-rs`, producing `superslide.exe`. Release builds set `#![windows_subsystem = "windows"]` so no console opens.
+One binary crate, `superslide-rs` ([Cargo.toml](../../Cargo.toml)), producing `superslide.exe`. Release builds set `#![windows_subsystem = "windows"]` ([main.rs](../../src/main.rs)) so no console opens.
 
 | Module | Owns |
 | --- | --- |
-| `main` | Command-line paths, building the event loop, handing control to `app`. |
-| `app` | The winit `ApplicationHandler`: turns input into `Command`s, owns all state, runs commands. |
-| `keymap` | Maps keys and mouse gestures to `Command`. The only place bindings are decided. |
-| `library` | Scanning paths into the image list, the folder filter, sort modes, shuffle, grouping. No GPU, no I/O beyond the filesystem scan. |
-| `decode` | Turning a path into oriented-at-draw RGBA pixels: format dispatch, EXIF orientation read, oversize downscale. |
-| `cache` | The preload cache and its decode worker pool. |
-| `view` | The view transform: fit, zoom, pan, screen rotation, EXIF orientation. Pure math. |
-| `render` | wgpu device and surface, image texture upload, mip generation, the quad pipeline, egui painting. |
-| `ui` | egui content: info overlay, notices, preferences screen. |
-| `files` | Delete to Recycle Bin, move, copy. |
-| `clipboard` | Ctrl+C and Ctrl+V through `arboard`. |
-| `prefs` | `Preferences` and `Session`: defaults, TOML load and atomic save beside the executable. |
+| [`main`](../../src/main.rs) | Command-line paths, building the event loop, handing control to `app`. |
+| [`app`](../../src/app.rs) | The winit `ApplicationHandler`: turns input into `Command`s, owns all state, runs commands. |
+| [`keymap`](../../src/keymap.rs) | Maps keys and mouse gestures to `Command`. The only place bindings are decided. |
+| [`library`](../../src/library.rs) | Scanning paths into the image list, the folder filter, sort modes, shuffle, grouping. No GPU, no I/O beyond the filesystem scan. |
+| [`decode`](../../src/decode.rs) | Turning a path into oriented-at-draw RGBA pixels: format dispatch, EXIF orientation read, oversize downscale. |
+| [`cache`](../../src/cache.rs) | The preload cache and its decode worker pool. |
+| [`view`](../../src/view.rs) | The view transform: fit, zoom, pan, screen rotation, EXIF orientation. Pure math. |
+| [`render`](../../src/render.rs) | wgpu device and surface, image texture upload, mip generation, the quad pipeline, egui painting. |
+| [`ui`](../../src/ui.rs) | egui content: info overlay, notices, preferences screen. |
+| [`files`](../../src/files.rs) | Delete to Recycle Bin, move, copy. |
+| [`clipboard`](../../src/clipboard.rs) | Ctrl+C and Ctrl+V through `arboard`. |
+| [`prefs`](../../src/prefs.rs) | `Preferences` and `Session`: defaults, TOML load and atomic save beside the executable. |
 
 `library`, `view`, `decode`, `cache` (policy, not threads) and `prefs` carry the unit tests; they take no window or GPU so tests run headless.
 
@@ -118,3 +118,5 @@ Ctrl+V shows the clipboard image in place of the current image without adding it
 - `[profile.dev.package."*"] opt-level = 3`: unoptimised decoders take seconds per 50 MP JPEG and make dev builds unusable.
 - Release: `lto = "thin"`, `codegen-units = 1`.
 - Toolchain: stable, edition 2024.
+- `wgpu` and `egui-wgpu` build without default features, so only the Dx12 backend compiles; `image` builds only PNG, TGA and BMP, since JPEG goes through `zune-jpeg`. The defaults would also compile Vulkan, GL, Metal, WebGL, AVIF and WebP support the viewer never uses.
+- A scaffolded module carries `#![expect(dead_code, reason = "scaffold: …")]`. Once the module is wired up, the expectation goes unfulfilled and `clippy -D warnings` fails: delete the attribute then.

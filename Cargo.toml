@@ -1,0 +1,39 @@
+[package]
+name = "superslide-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+
+[[bin]]
+name = "superslide"
+path = "src/main.rs"
+
+[dependencies]
+arboard = "3.6.1"
+egui = "0.36.2"
+# Default features pull in every backend plus WebGL; the viewer only runs on Dx12 (WARP as fallback).
+egui-wgpu = { version = "0.36.2", default-features = false, features = ["winit"] }
+egui-winit = "0.36.2"
+fast_image_resize = "6.1.0"
+# JPEG goes through zune-jpeg directly; the default feature set would also build AVIF, WebP and more.
+image = { version = "0.25.10", default-features = false, features = ["png", "tga", "bmp"] }
+kamadak-exif = "0.6.1"
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+trash = "5.2.9"
+walkdir = "2.5.0"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
+winit = "0.30.13"
+zune-jpeg = "0.5.15"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+# Unoptimised decoders take seconds per 50 MP JPEG, which makes dev builds unusable.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
