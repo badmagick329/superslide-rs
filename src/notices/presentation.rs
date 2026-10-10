@@ -9,8 +9,8 @@ use crate::notices::domain::Notices;
 /// Gap from the window corner and between notices, in points.
 const NOTICE_SPACING: f32 = 12.0;
 
-/// Drops expired notices and draws the rest, top-right, oldest on top. The top-left corner is left
-/// to the info overlay.
+/// Drops expired notices and draws the rest, top-right, oldest on top. The info overlay has the
+/// bottom-left corner.
 pub fn show(notices: &mut Notices, ctx: &egui::Context, now: Instant) {
     let visible = notices.visible(now);
     if visible.is_empty() {

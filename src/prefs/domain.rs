@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::info_overlay::domain::InfoOverlay;
 use crate::view::domain::MagnificationFilter;
 
 /// The owner's persisted options. Defaults follow *Preference defaults* in
@@ -25,6 +26,7 @@ pub struct Preferences {
     pub start_fullscreen: bool,
     pub session_restore: bool,
     pub magnification_filter: MagnificationFilter,
+    pub info_overlay: InfoOverlay,
 }
 
 impl Default for Preferences {
@@ -37,6 +39,7 @@ impl Default for Preferences {
             start_fullscreen: false,
             session_restore: true,
             magnification_filter: MagnificationFilter::Linear,
+            info_overlay: InfoOverlay::Hidden,
         }
     }
 }

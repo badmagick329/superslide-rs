@@ -176,7 +176,7 @@ impl View {
     }
 
     /// Screen pixels per image pixel.
-    fn scale(&self) -> f32 {
+    pub fn scale(&self) -> f32 {
         self.zoom * self.fit_scale()
     }
 

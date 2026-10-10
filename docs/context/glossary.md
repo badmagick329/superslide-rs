@@ -15,7 +15,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Help overlay | The panel ? opens over the image, listing every binding, scrollable and filterable with /. While open it takes all input. | cheat sheet, shortcuts screen | `help` slice; rows are `shell::keymap::BINDINGS` |
 | Image | A JPG, PNG, TGA or BMP file the viewer can show. | photo, slide, picture | |
 | Image list | The ordered images from the last open, after the folder filter, sort mode and grouping are applied. | playlist | `ImageList`; its order is `Order` |
-| Info overlay | Text drawn over the image; I cycles it through none, filename only and full details. | | |
+| Info overlay | Text in the bottom-left corner describing the image on screen; I cycles it through hidden, file name only and full details. | | `info_overlay` slice; its mode is `InfoOverlay`, kept in `Preferences` |
 | Magnification filter | How pixels are drawn when zoomed past native size: linear (smooth) or nearest (sharp); Ctrl+F toggles it. | bilinear filtering | |
 | Notice | A short text shown over the image that fades after a few seconds, for errors, progress and confirmations. | toast, popup | |
 | Pan | Moving a zoomed image within the window by drag or arrow keys. | scroll | |

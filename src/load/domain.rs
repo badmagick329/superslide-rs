@@ -18,10 +18,6 @@ pub struct Decoded {
     /// Size of `pixels`: the stored size, or smaller when it was downscaled to fit the GPU.
     pub size: [u32; 2],
     /// Size in the file, before any downscale, for the info overlay.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "scaffold: the info overlay shows it (SSR-17)")
-    )]
     pub original_size: [u32; 2],
     /// RGBA8 in sRGB, row-major, no row padding.
     pub pixels: Vec<u8>,

@@ -25,6 +25,9 @@ use crate::file_actions::presentation as file_actions;
 use crate::help::domain::{Binding, Help};
 use crate::help::presentation as help;
 use crate::image_file::domain::{Format, Orientation};
+use crate::info_overlay::domain::{Details, FileFacts, InfoOverlay, Listed, Pixels, Subject};
+use crate::info_overlay::infrastructure::local_time;
+use crate::info_overlay::presentation as info_overlay;
 use crate::load::domain::preload::{PreloadCache, preload_window};
 use crate::load::domain::{DecodeError, Decoded};
 use crate::load::infrastructure::workers::Workers;
@@ -36,7 +39,7 @@ use crate::prefs::domain::Preferences;
 use crate::shell::command::Command;
 use crate::shell::keymap::{self, HelpKey};
 use crate::shell::render::{self, ImageTexture, Renderer, UiFrame};
-use crate::view::domain::View;
+use crate::view::domain::{MagnificationFilter, View};
 
 /// Sent to the event loop from other threads through its proxy.
 pub enum AppEvent {
@@ -75,6 +78,8 @@ const LOADING_DELAY: Duration = Duration::from_millis(150);
 /// on screen does not free it mid-display.
 struct Cached {
     texture: Rc<ImageTexture>,
+    /// In the file; the texture is smaller when it was downscaled to the GPU's limit.
+    original_size: [u32; 2],
     orientation: Orientation,
 }
 
@@ -86,6 +91,7 @@ enum Showing {
         /// image.
         path: Option<PathBuf>,
         texture: Rc<ImageTexture>,
+        original_size: [u32; 2],
         view: View,
     },
     Error {
@@ -133,6 +139,8 @@ struct Shown {
     /// The last non-zero inner size: a minimised window reports 0 × 0, which no view can fit.
     window_size: [u32; 2],
     renderer: Renderer,
+    /// Defaults until SSR-18 loads the file; I already changes `info_overlay` in it.
+    preferences: Preferences,
     showing: Showing,
     images: Option<ImageList>,
     /// Which way the owner last moved; the preload window leans this way.
@@ -311,9 +319,11 @@ impl ApplicationHandler<AppEvent> for App {
             window,
             window_size,
             renderer,
+            preferences,
             showing: Showing::Image {
                 path: None,
                 texture,
+                original_size: image_size,
                 view,
             },
             images: None,
@@ -696,6 +706,7 @@ impl Shown {
             Some(Ok(cached)) => Showing::Image {
                 path: Some(path.clone()),
                 texture: cached.texture.clone(),
+                original_size: cached.original_size,
                 view: View::new(
                     cached.texture.size(),
                     cached.orientation,
@@ -738,6 +749,7 @@ impl Shown {
                 let texture = self.renderer.upload(decoded.size, &decoded.pixels);
                 let cached = Cached {
                     texture: Rc::new(texture),
+                    original_size: decoded.original_size,
                     orientation: decoded.orientation,
                 };
                 (bytes, Ok(cached))
@@ -896,6 +908,7 @@ impl Shown {
             path: None,
             view: View::new(texture.size(), Orientation::Normal, 0, self.window_size),
             texture,
+            original_size: decoded.original_size,
         };
         self.pasted = true;
         // Covers any image still loading; leaving the clipboard image starts the wait afresh.
@@ -907,9 +920,64 @@ impl Shown {
         self.slideshow.restart(now);
     }
 
+    /// What the info overlay describes: the image on screen, which is not the current image
+    /// while the next one loads.
+    fn details(&self) -> Option<Details> {
+        let (path, pixels) = match &self.showing {
+            Showing::Nothing => return None,
+            Showing::Image {
+                path,
+                texture,
+                original_size,
+                view,
+            } => {
+                let pixels = Pixels {
+                    original: *original_size,
+                    displayed: texture.size(),
+                    scale: view.scale(),
+                    nearest: self.renderer.magnification_filter == MagnificationFilter::Nearest,
+                };
+                (path.as_deref(), Some(pixels))
+            }
+            Showing::Error { path, .. } => (Some(path.as_path()), None),
+        };
+        let subject = match path {
+            None if self.pasted => Subject::Clipboard,
+            None => Subject::StandIn,
+            Some(path) => Subject::File(FileFacts {
+                name: file_name(path),
+                folder: folder(path).display().to_string(),
+                listed: self.listed(path),
+            }),
+        };
+        Some(Details { subject, pixels })
+    }
+
+    fn listed(&self, path: &Path) -> Option<Listed> {
+        let images = self.images.as_ref()?;
+        // Nearly always the current image; any other costs a search of the list.
+        let position = match images.current() {
+            Some(entry) if entry.path == path => images.current_position(),
+            _ => images.position(path)?,
+        };
+        let entry = &images.entries()[position];
+        Some(Listed {
+            position: position + 1,
+            count: images.len(),
+            bytes: entry.size,
+            modified: local_time(entry.modified),
+            order: describe(images.order()),
+        })
+    }
+
     fn redraw(&mut self) {
         let now = Instant::now();
         let input = self.egui_input.take_egui_input(&self.window);
+        let info_mode = self.preferences.info_overlay;
+        let details = match info_mode {
+            InfoOverlay::Hidden => None,
+            _ => self.details(),
+        };
         let showing = &self.showing;
         let shown_notices = &mut self.notices;
         let open_help = &mut self.help;
@@ -919,6 +987,9 @@ impl Shown {
             } = showing
             {
                 error_card(ui.ctx(), file_name, reason);
+            }
+            if let Some(details) = &details {
+                info_overlay::show(ui.ctx(), info_mode, details);
             }
             if let Some(open) = open_help {
                 let rows: Vec<Binding> = keymap::BINDINGS
@@ -1032,6 +1103,10 @@ impl Shown {
             }
             #[cfg(debug_assertions)]
             Command::TestNotice => self.notices.notify("Test notice", Instant::now()),
+            Command::CycleInfoOverlay => {
+                let mode = &mut self.preferences.info_overlay;
+                *mode = mode.cycled();
+            }
             Command::ToggleMagnificationFilter => {
                 let filter = &mut self.renderer.magnification_filter;
                 *filter = filter.toggled();

@@ -80,6 +80,7 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
                 "v" | "V" => (Command::ReverseSort, false),
                 "g" | "G" => (Command::ToggleGrouping, false),
                 "a" | "A" => (Command::ToggleSlideshow, false),
+                "i" | "I" => (Command::CycleInfoOverlay, false),
                 "?" => (Command::ToggleHelp, false),
                 "/" => (Command::FocusHelpFilter, false),
                 "m" | "M" => (Command::Transfer(Transfer::Move), false),
@@ -435,7 +436,12 @@ pub const BINDINGS: &[Row] = &[
         Section::View,
         &[char("f", CTRL, Command::ToggleMagnificationFilter)],
     ),
-    row("I", "Cycle the info overlay", Section::View, &[]),
+    row(
+        "I",
+        "Cycle the info overlay",
+        Section::View,
+        &[char("i", NONE, Command::CycleInfoOverlay)],
+    ),
     row(
         "N, D, Z",
         "Sort by name, date, size",
@@ -664,8 +670,8 @@ mod tests {
             .filter(|row| row.probes.is_empty())
             .map(|row| row.binding.keys)
             .collect();
-        // The info overlay (SSR-17) and preferences (SSR-18); each issue adds its probe.
-        assert_eq!(unprobed, ["I", "P"]);
+        // Preferences (SSR-18) adds its probe.
+        assert_eq!(unprobed, ["P"]);
     }
 
     #[test]
