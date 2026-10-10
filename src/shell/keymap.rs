@@ -5,6 +5,7 @@ use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::browse::domain::{Direction, SortKey};
+use crate::file_actions::domain::Transfer;
 use crate::shell::command::Command;
 use crate::view::domain::{Anchor, PanBy, Turn};
 
@@ -36,6 +37,7 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
         Key::Named(NamedKey::ArrowRight) if ctrl && !modifiers.alt_key() => {
             (Command::JumpGroup(Direction::Forward), false)
         }
+        Key::Named(NamedKey::Delete) if plain => (Command::DeleteToRecycleBin, false),
         #[cfg(debug_assertions)]
         Key::Named(NamedKey::F9) => (Command::TestNotice, false),
         Key::Named(
@@ -74,6 +76,8 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
                 "v" | "V" => (Command::ReverseSort, false),
                 "g" | "G" => (Command::ToggleGrouping, false),
                 "a" | "A" => (Command::ToggleSlideshow, false),
+                "m" | "M" => (Command::Transfer(Transfer::Move), false),
+                "c" | "C" => (Command::Transfer(Transfer::Copy), false),
                 // The Shift key, not the character, so Caps Lock does not turn O recursive.
                 "o" | "O" => (
                     Command::Open {
@@ -258,6 +262,13 @@ mod tests {
         let a = Key::Character("a".into());
         assert_eq!(for_key(&a, none, false), Some(Command::ToggleSlideshow));
         assert_eq!(for_key(&a, none, true), None);
+        // A held Delete must not empty the folder.
+        let delete = Key::Named(NamedKey::Delete);
+        assert_eq!(
+            for_key(&delete, none, false),
+            Some(Command::DeleteToRecycleBin)
+        );
+        assert_eq!(for_key(&delete, none, true), None);
         let right = Key::Named(NamedKey::ArrowRight);
         assert!(matches!(for_key(&right, none, true), Some(Command::Pan(_))));
         let plus = Key::Character("+".into());
@@ -283,8 +294,13 @@ mod tests {
             for_key(&Key::Character("f".into()), ModifiersState::empty(), false),
             None
         );
-        // Ctrl+R and Ctrl+arrows belong to other bindings, not rotate and pan.
+        // Ctrl+R and Ctrl+arrows belong to other bindings, not rotate and pan; Ctrl+C is the
+        // clipboard, not a copy to a folder.
         assert_eq!(for_key(&Key::Character("r".into()), ctrl, false), None);
+        assert_ne!(
+            for_key(&Key::Character("c".into()), ctrl, false),
+            Some(Command::Transfer(Transfer::Copy))
+        );
         assert_eq!(
             for_key(&Key::Named(NamedKey::ArrowLeft), ctrl, false),
             Some(Command::JumpGroup(Direction::Backward))

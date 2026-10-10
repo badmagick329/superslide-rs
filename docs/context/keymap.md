@@ -1,6 +1,6 @@
 # Keymap
 
-The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, rows arriving with their issues. Every row works except I (SSR-17), Delete and M / C (SSR-15), Ctrl+C / Ctrl+V (SSR-16) and P (SSR-18). egui sees input first but keeps it only while one of its widgets has focus. Change both together.
+The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, rows arriving with their issues. Every row works except I (SSR-17), Ctrl+C / Ctrl+V (SSR-16) and P (SSR-18). egui sees input first but keeps it only while one of its widgets has focus. Change both together.
 
 | Input | Command |
 | --- | --- |
@@ -27,4 +27,4 @@ The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this 
 | Ctrl+C / Ctrl+V | Copy the current image to the clipboard / show the clipboard image |
 | P | Open or close preferences |
 
-Holding Space or Backspace repeats under the advance limit; holding an arrow, + or - repeats at the keyboard's rate; every other key acts once per press. Letter bindings and arrow pan ignore the key while Ctrl or Alt is held, leaving those chords to their own rows. Fullscreen is borderless on the window's current monitor, with no display mode change. Bindings the original had and v1 drops: H (no transitions to skip), t/T (contrast), Alt (no menu). Debug builds add F9, which shows a test notice.
+Holding Space or Backspace repeats under the advance limit; holding an arrow, + or - repeats at the keyboard's rate; every other key acts once per press, so a held Delete deletes one image. Letter bindings and arrow pan ignore the key while Ctrl or Alt is held, leaving those chords to their own rows. Fullscreen is borderless on the window's current monitor, with no display mode change. Bindings the original had and v1 drops: H (no transitions to skip), t/T (contrast), Alt (no menu). Debug builds add F9, which shows a test notice.

@@ -1,6 +1,6 @@
 //! The winit `ApplicationHandler`: turns input into [`Command`]s, owns all state and runs commands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -17,6 +17,9 @@ use crate::browse::domain::slideshow::Slideshow;
 use crate::browse::domain::{Direction, ImageList, Order, SortMode, folder};
 use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
 use crate::browse::presentation::describe;
+use crate::file_actions::domain::{Action, Failure, Transfer};
+use crate::file_actions::infrastructure::FileActions;
+use crate::file_actions::presentation as file_actions;
 use crate::image_file::domain::{Format, Orientation};
 use crate::load::domain::preload::{PreloadCache, preload_window};
 use crate::load::domain::{DecodeError, Decoded};
@@ -39,6 +42,12 @@ pub enum AppEvent {
         path: PathBuf,
         result: Result<Decoded, DecodeError>,
     },
+    /// The file action thread finished `action` on `path`.
+    Acted {
+        path: PathBuf,
+        action: Action,
+        result: Result<(), Failure>,
+    },
 }
 
 /// Key of the notice that shows scan progress, then its result.
@@ -47,6 +56,7 @@ const LOADING_NOTICE: &str = "loading";
 /// Key of the notice naming the image list's order, so pressing sort keys in a row replaces it.
 const ORDER_NOTICE: &str = "order";
 const SLIDESHOW_NOTICE: &str = "slideshow";
+const NOT_A_FILE: &str = "This image is not a file";
 const TITLE: &str = "SuperSlide-RS";
 /// Waits shorter than this pass without a notice: a flash of `Loading…` on every image change
 /// would be noise.
@@ -73,6 +83,8 @@ enum Showing {
         file_name: String,
         reason: String,
     },
+    /// The last image was deleted or moved away.
+    Nothing,
 }
 
 impl Showing {
@@ -80,6 +92,7 @@ impl Showing {
         match self {
             Showing::Image { path, .. } => path.as_deref(),
             Showing::Error { path, .. } => Some(path),
+            Showing::Nothing => None,
         }
     }
 }
@@ -120,6 +133,12 @@ struct Shown {
     turns: HashMap<PathBuf, u8>,
     cache: PreloadCache<Cached>,
     workers: Workers,
+    file_actions: FileActions,
+    /// Paths with a file action asked for but not finished. A second Delete pressed before the
+    /// first one's result would act on the same file again.
+    acting_on: HashSet<PathBuf>,
+    /// Where M and C last sent an image; their folder picker opens there. Until the app closes.
+    target_folder: Option<PathBuf>,
     waiting: Option<Waiting>,
     egui: egui::Context,
     egui_input: egui_winit::State,
@@ -239,6 +258,15 @@ impl ApplicationHandler<AppEvent> for App {
             // Fails only once the event loop has exited, when nobody wants the result.
             let _ = proxy.send_event(AppEvent::Decoded { path, result });
         });
+        let proxy = self.proxy.clone();
+        let file_actions = FileActions::spawn(move |path, action, result| {
+            // Fails only once the event loop has exited, when nobody wants the result.
+            let _ = proxy.send_event(AppEvent::Acted {
+                path,
+                action,
+                result,
+            });
+        });
         // Preferences are not loaded yet; the defaults stand in.
         let preferences = Preferences::default();
         let budget = u64::from(preferences.preload_budget_mb) << 20;
@@ -269,6 +297,9 @@ impl ApplicationHandler<AppEvent> for App {
             turns: HashMap::new(),
             cache: PreloadCache::new(budget),
             workers,
+            file_actions,
+            acting_on: HashSet::new(),
+            target_folder: None,
             waiting: None,
             egui,
             egui_input,
@@ -292,6 +323,15 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::Decoded { path, result } => {
                 if let Some(shown) = &mut self.shown {
                     shown.decoded(path, result);
+                }
+            }
+            AppEvent::Acted {
+                path,
+                action,
+                result,
+            } => {
+                if let Some(shown) = &mut self.shown {
+                    shown.acted(path, action, result);
                 }
             }
         }
@@ -420,7 +460,7 @@ impl Shown {
     fn view(&mut self) -> Option<&mut View> {
         match &mut self.showing {
             Showing::Image { view, .. } => Some(view),
-            Showing::Error { .. } => None,
+            Showing::Error { .. } | Showing::Nothing => None,
         }
     }
 
@@ -621,6 +661,94 @@ impl Shown {
         self.show_current(Instant::now());
     }
 
+    /// Asks the file action thread to delete (`None`), move or copy the image on screen: the one
+    /// the owner sees, even while the current image is still loading.
+    fn act(&mut self, transfer: Option<Transfer>) {
+        let path = match &self.showing {
+            Showing::Nothing => return,
+            showing => showing.path().map(Path::to_path_buf),
+        };
+        // The stand-in, and from SSR-16 the clipboard image, exist only in memory.
+        let Some(path) = path else {
+            self.notices.notify(NOT_A_FILE, Instant::now());
+            return self.window.request_redraw();
+        };
+        if self.acting_on.contains(&path) {
+            return;
+        }
+        let action = match transfer {
+            None => Action::Delete,
+            Some(transfer) => {
+                let Some(folder) = self.pick_folder(transfer, &path) else {
+                    return;
+                };
+                self.target_folder = Some(folder.clone());
+                Action::Transfer(transfer, folder)
+            }
+        };
+        self.acting_on.insert(path.clone());
+        self.file_actions.request(path, action);
+    }
+
+    /// The native folder picker for M or C, opening where the last one went, else at the
+    /// image's own folder. Modal, like [`Self::pick`]. `None` when cancelled.
+    fn pick_folder(&self, transfer: Transfer, path: &Path) -> Option<PathBuf> {
+        let title = match transfer {
+            Transfer::Move => "Move to folder",
+            Transfer::Copy => "Copy to folder",
+        };
+        rfd::FileDialog::new()
+            .set_parent(&*self.window)
+            .set_title(title)
+            .set_directory(self.target_folder.as_deref().unwrap_or(folder(path)))
+            .pick_folder()
+    }
+
+    /// Every outcome gets a notice; a deleted or moved image leaves the image list.
+    fn acted(&mut self, path: PathBuf, action: Action, result: Result<(), Failure>) {
+        self.acting_on.remove(&path);
+        let now = Instant::now();
+        let text = file_actions::describe(&file_name(&path), &action, &result);
+        self.notices.notify(text, now);
+        self.window.request_redraw();
+        if result.is_ok() && action.removes() {
+            self.remove(&path, now);
+        }
+    }
+
+    /// Takes a deleted or moved image out of the image list and the preload cache. If it was
+    /// current, the next image shows, at once when it was preloaded.
+    fn remove(&mut self, path: &Path, now: Instant) {
+        let Some(images) = &mut self.images else {
+            return;
+        };
+        let Some(removed) = images.remove(path) else {
+            return;
+        };
+        self.turns.remove(path);
+        self.cache
+            .reindex(images.entries().iter().map(|entry| entry.path.as_path()));
+        if images.len() == 0 {
+            self.images = None;
+            if self.slideshow.stop() {
+                self.notices
+                    .notify_as(SLIDESHOW_NOTICE, "Slideshow off", now);
+            }
+            self.showing = Showing::Nothing;
+            self.waiting = None;
+            self.notices.dismiss(LOADING_NOTICE);
+            self.notices.notify("No images left", now);
+            self.window.set_title(TITLE);
+            return;
+        }
+        if removed.was_current {
+            // The next image is the one after, so travel is forward from here.
+            self.moved(Direction::Forward, removed.wrapped);
+        } else {
+            self.retarget();
+        }
+    }
+
     fn redraw(&mut self) {
         let now = Instant::now();
         let input = self.egui_input.take_egui_input(&self.window);
@@ -649,7 +777,7 @@ impl Shown {
         };
         let image = match &self.showing {
             Showing::Image { texture, view, .. } => Some((&**texture, view.transform())),
-            Showing::Error { .. } => None,
+            Showing::Error { .. } | Showing::Nothing => None,
         };
         self.renderer.draw(image, ui);
     }
@@ -677,6 +805,8 @@ impl Shown {
                 return self.navigate(direction);
             }
             Command::JumpGroup(direction) => return self.jump_group(direction),
+            Command::DeleteToRecycleBin => return self.act(None),
+            Command::Transfer(transfer) => return self.act(Some(transfer)),
             // Without an image list there is nothing to show; opening one would stop it anyway.
             Command::ToggleSlideshow if self.images.is_some() => {
                 let now = Instant::now();

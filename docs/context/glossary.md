@@ -8,6 +8,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Clipboard image | An image pasted with Ctrl+V, shown in place of the current image but outside the image list; file actions are disabled on it. | | |
 | Current image | The image on screen, one position in the image list. | current slide | |
 | Error card | What is drawn in place of an image that failed to decode: the file name and a one-line reason. | | `load::presentation::error_card` |
+| File action | Delete to the Recycle Bin (Delete), move (M) or copy (C) of the current image's file; the only writes the viewer makes to image files. | | `file_actions::domain::Action` |
 | Fit | The zoom level at which the whole image fits the window; every image opens at fit. | | |
 | Folder filter | Folder names excluded when opening a folder. | family filter, excluded folders | |
 | Group by subfolder | Ordering that keeps each subfolder's images together, sorted by the sort mode within each group; Ctrl+Left/Right jumps between groups. | | `Order::grouped`, `ImageList::jump_group` |
@@ -26,5 +27,5 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Shuffle | The sort mode that gives the image list a random order, kept until the next shuffle. | random | |
 | Slideshow | Timed automatic advance to the next image, toggled with A. | | `Slideshow` |
 | Sort mode | The image list's order: name (N), date (D), size (Z) or shuffle (S); V reverses it. | | `SortMode` |
-| Target folder | The folder M or C last moved or copied an image to; the next folder picker opens there. | | |
+| Target folder | The folder M or C last moved or copied an image to; the next folder picker opens there. | last target, destination | `Shown::target_folder` |
 | Zoom | Scaling the image relative to fit, by right-drag, wheel, + / - or Ctrl+ / Ctrl- (double or half). | | |

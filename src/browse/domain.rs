@@ -219,6 +219,35 @@ impl ImageList {
     pub fn position(&self, path: &Path) -> Option<usize> {
         self.entries.iter().position(|entry| entry.path == path)
     }
+
+    /// Takes out an image whose file was deleted or moved. The current image stays current;
+    /// if it is the one removed, the next becomes current, wrapping from the last to the first.
+    /// `None` when `path` is not in the list.
+    pub fn remove(&mut self, path: &Path) -> Option<Removed> {
+        let position = self.position(path)?;
+        self.entries.remove(position);
+        let was_current = position == self.current;
+        let mut wrapped = false;
+        if position < self.current {
+            self.current -= 1;
+        } else if was_current && self.current == self.entries.len() {
+            self.current = 0;
+            wrapped = !self.entries.is_empty();
+        }
+        Some(Removed {
+            was_current,
+            wrapped,
+        })
+    }
+}
+
+/// What [`ImageList::remove`] did to the current image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Removed {
+    /// The removed image was current, so the next one now is.
+    pub was_current: bool,
+    /// Its next image was the first.
+    pub wrapped: bool,
 }
 
 fn arrange(entries: &mut [Entry], order: Order) {
@@ -583,5 +612,37 @@ mod tests {
         let mut ungrouped = ImageList::new(entries, None, by(SortKey::Name));
         assert_eq!(ungrouped.jump_group(Direction::Forward), None);
         assert_eq!(ungrouped.current_position(), 0);
+    }
+
+    #[test]
+    fn removing_an_image_keeps_or_advances_the_current_one() {
+        // Name order: b, img1, IMG2, img10.
+        let current = |list: &ImageList| list.current().unwrap().path.to_str().unwrap().to_owned();
+        let mut list = ImageList::new(sample(), Some(Path::new("f/IMG2.jpg")), by(SortKey::Name));
+        let kept = Removed {
+            was_current: false,
+            wrapped: false,
+        };
+        // Before and after the current image: it stays current.
+        assert_eq!(list.remove(Path::new("f/b.jpg")), Some(kept));
+        assert_eq!(current(&list), "f/IMG2.jpg");
+        assert_eq!(list.remove(Path::new("f/img10.jpg")), Some(kept));
+        assert_eq!(current(&list), "f/IMG2.jpg");
+        assert_eq!(list.remove(Path::new("f/b.jpg")), None);
+
+        // The current image, last in the list: the next is the first.
+        let removed = list.remove(Path::new("f/IMG2.jpg")).unwrap();
+        assert!(removed.was_current && removed.wrapped);
+        assert_eq!(current(&list), "f/img1.jpg");
+
+        let mut middle = ImageList::new(sample(), Some(Path::new("f/img1.jpg")), by(SortKey::Name));
+        let removed = middle.remove(Path::new("f/img1.jpg")).unwrap();
+        assert!(removed.was_current && !removed.wrapped);
+        assert_eq!(current(&middle), "f/IMG2.jpg");
+
+        // The last image: an empty list, with nothing to wrap to.
+        let removed = list.remove(Path::new("f/img1.jpg")).unwrap();
+        assert!(removed.was_current && !removed.wrapped);
+        assert!(list.current().is_none());
     }
 }

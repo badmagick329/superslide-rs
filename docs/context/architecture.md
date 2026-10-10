@@ -1,6 +1,6 @@
 # Architecture
 
-The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code. *Files and persistence* and *Clipboard* are still the target for phases 2 and 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
+The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* describes SSR-15 as built. *Files and persistence* and *Clipboard* are still the target for phases 2 and 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
 
 ## Shape
 
@@ -17,19 +17,21 @@ The code is vertical slices, one folder per feature, each split into the layers 
 | [`view`](../../src/view/mod.rs) | domain | The view transform (fit, zoom, pan, screen rotation, EXIF orientation) and the magnification filter. Pure math. |
 | [`notices`](../../src/notices/mod.rs) | domain, presentation | Notice timing and stacking in `domain`; egui drawing and count wording in `presentation`. |
 | [`prefs`](../../src/prefs/mod.rs) | domain | `Preferences` and their defaults. It holds other slices' domain types, such as the magnification filter. |
-| [`info_overlay`](../../src/info_overlay/mod.rs), [`file_actions`](../../src/file_actions/mod.rs), [`clipboard`](../../src/clipboard/mod.rs) | domain, domain, none | Scaffolds for SSR-17, SSR-15 and SSR-16. |
+| [`file_actions`](../../src/file_actions/mod.rs) | domain, infrastructure, presentation | Delete, move and copy: `Action` and `Failure` in `domain`; the file action thread and the no-overwrite filesystem calls in `infrastructure`; the notice wording in `presentation`. |
+| [`info_overlay`](../../src/info_overlay/mod.rs), [`clipboard`](../../src/clipboard/mod.rs) | domain, none | Scaffolds for SSR-17 and SSR-16. |
 
 A layer that grows past one concern becomes a file with submodules beside it (`load/domain.rs` and `load/domain/preload.rs`), so paths still name the layer.
 
-[`main`](../../src/main.rs) reads command-line paths, builds the event loop and hands control to `shell::app`. Unit tests sit beside the code they test; every `domain` and the `browse` and `load` infrastructure carry them, and none needs a window or GPU, so tests run headless.
+[`main`](../../src/main.rs) reads command-line paths, builds the event loop and hands control to `shell::app`. Unit tests sit beside the code they test; every `domain` and the `browse`, `load` and `file_actions` infrastructure carry them, and none needs a window or GPU, so tests run headless.
 
 ## Threads
 
-- **Main thread**: the winit event loop, all state, all wgpu calls, egui. Nothing on it blocks on decoding or scanning; the only blocking calls are the native file and folder dialogs, which are modal by nature.
+- **Main thread**: the winit event loop, all state, all wgpu calls, egui. Nothing on it blocks on decoding, scanning or file actions; the only blocking calls are the native file and folder dialogs, which are modal by nature.
 - **Decode workers**: `min(available_parallelism - 1, 4)` threads, at least 1, taking the highest-priority job from one shared queue (`Workers` in [workers.rs](../../src/load/infrastructure/workers.rs)). A decoder panic is caught and becomes that file's error, so a hostile file costs one image, not a worker. Dropping `Workers` stops them after their current decode.
 - **Scan thread**: one per open, walking the filesystem; sends the finished, sorted image list back, plus progress counts for a notice. Dropping the `Scan` handle ([browse/infrastructure.rs](../../src/browse/infrastructure.rs)) cancels it, and the app tags each scan's events with a generation number, so a newer open replaces an older one and its late events are ignored.
+- **File action thread**: one, running delete, move and copy in the order asked (`FileActions` in [file_actions/infrastructure.rs](../../src/file_actions/infrastructure.rs)). A Recycle Bin call or a copy to a slow drive can take seconds. Dropping `FileActions` waits for the queue to finish, so closing the window mid-copy never leaves half a file.
 
-Workers and the scan thread send `AppEvent`s ([app.rs](../../src/shell/app.rs)) through the event loop's `EventLoopProxy`, which also wakes the loop. GPU upload happens on the main thread when the result arrives, and the CPU pixels are dropped right after.
+Workers, the scan thread and the file action thread send `AppEvent`s ([app.rs](../../src/shell/app.rs)) through the event loop's `EventLoopProxy`, which also wakes the loop. GPU upload happens on the main thread when the result arrives, and the CPU pixels are dropped right after.
 
 ## Image change
 
@@ -143,8 +145,20 @@ Built in [browse/infrastructure.rs](../../src/browse/infrastructure.rs): `Open` 
 - `superslide-prefs.toml` and `superslide-session.toml`, both beside `superslide.exe`. Writes go to a temp file, then rename.
 - Unwritable or corrupt file: run on defaults, show one notice, keep running. A corrupt file is renamed `.bak` before being replaced.
 - Session is saved on exit and at most every 10 s while it has changed.
-- Move and copy never overwrite: a name collision skips the file with a notice.
-- After delete or move, the image leaves the image list and the cache, and the next image becomes current.
+
+## File actions
+
+Delete, M and C act on the image on screen, error cards included, even while the current image is still loading ([app.rs](../../src/shell/app.rs) `Shown::act`); the filesystem work is in [file_actions/infrastructure.rs](../../src/file_actions/infrastructure.rs), on the file action thread.
+
+- Delete calls `trash::delete`, with no confirmation: the Recycle Bin is the undo. On a drive with no Recycle Bin (a network share), Windows asks before deleting for good.
+- M and C open the native folder picker at the target folder, or the image's own folder before the first one; it is kept until the app closes (SSR-19 persists it).
+- Neither ever overwrites. A target name that exists, including the image's own folder, fails with `Failure::Exists` and touches neither file. Moves use `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`, since `std::fs::rename` replaces on Windows; copies create the target with `create_new`, so a file appearing between the check and the write is still never replaced.
+- A move between drives copies, flushes the copy to disk, then deletes the original; a failed copy (a full drive) removes its partial file and leaves the original. If only the delete fails, both files stay and the notice says so (`Failure::OriginalKept`).
+- Copies keep the original's modified time, so date sort places them alike.
+- Every outcome shows a notice naming the file and the target folder's name (not its full path, which wraps over several lines). A held key acts once, and a second press on an image whose action is still running is ignored.
+- After a delete or move, `ImageList::remove` takes the image out and `PreloadCache::reindex` drops it from the cache. If it was current, the next image becomes current (wrapping from the last to the first, with the wrap notice) and shows at once when preloaded: the next image is always in the preload window. Removing the last image leaves an empty view (`Showing::Nothing`), the bare window title and `No images left`.
+- The stand-in has no file, so file actions on it show `This image is not a file`; the clipboard image (SSR-16) will too.
+- Measured on an RTX 3070, release build, 50 MP JPEGs: Delete to the next image on screen 109–126 ms, all of it the Recycle Bin call; a move within a drive and one from C: to D: (17 MB, copied and flushed) put the next image up 315 and 428 ms after the picker closed, with no `Loading…`. A deleted image restored from the Recycle Bin to its folder byte-identical.
 
 ## Clipboard
 

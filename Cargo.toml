@@ -26,6 +26,8 @@ toml = "1.1.8"
 trash = "5.2.9"
 walkdir = "2.5.0"
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
+# `MoveFileExW`, for a move that never replaces a file; `std::fs::rename` replaces on Windows.
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 winit = "0.30.13"
 zune-jpeg = "0.5.15"
 
