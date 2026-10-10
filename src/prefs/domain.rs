@@ -1,5 +1,5 @@
-//! `Preferences`, their defaults and ranges, and the preferences screen's editing state. `Session`
-//! arrives with SSR-19.
+//! `Preferences`, their defaults and ranges, and the preferences screen's editing state; the
+//! `Session` in [`session`].
 
 use std::ops::RangeInclusive;
 
@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::info_overlay::domain::InfoOverlay;
 use crate::view::domain::MagnificationFilter;
+
+pub mod session;
 
 pub const ADVANCE_LIMIT_MS: RangeInclusive<u32> = 0..=5_000;
 /// From 1 s: at 0 the slideshow would advance as fast as images decode.

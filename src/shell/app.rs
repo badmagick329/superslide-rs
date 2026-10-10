@@ -7,14 +7,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
+use winit::monitor::MonitorHandle;
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::browse::domain::advance::AdvanceLimit;
 use crate::browse::domain::slideshow::Slideshow;
-use crate::browse::domain::{Direction, ImageList, Order, SortMode, folder};
+use crate::browse::domain::{Direction, ImageList, Order, Resume, SortMode, folder};
 use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
 use crate::browse::presentation::describe;
 use crate::clipboard::infrastructure::{ClipboardThread, Done, Loading, Request};
@@ -35,8 +37,9 @@ use crate::load::infrastructure::{decode, shrink_to_fit};
 use crate::load::presentation::error_card;
 use crate::notices::domain::Notices;
 use crate::notices::presentation::{self as notices, thousands};
+use crate::prefs::domain::session::{self, Monitor, Placement, Route, Session};
 use crate::prefs::domain::{Preferences, Screen};
-use crate::prefs::infrastructure::PrefsFile;
+use crate::prefs::infrastructure::TomlFile;
 use crate::prefs::presentation as preferences;
 use crate::shell::command::Command;
 use crate::shell::keymap::{self, HelpKey};
@@ -75,6 +78,8 @@ const TITLE: &str = "SuperSlide-RS";
 /// Waits shorter than this pass without a notice: a flash of `Loading…` on every image change
 /// would be noise.
 const LOADING_DELAY: Duration = Duration::from_millis(150);
+/// A changed session is written at most this often: a held Space changes it many times a second.
+const SESSION_INTERVAL: Duration = Duration::from_secs(10);
 
 /// One image in the preload cache. The texture is shared with [`Showing`], so evicting the image
 /// on screen does not free it mid-display.
@@ -143,7 +148,23 @@ struct Shown {
     renderer: Renderer,
     preferences: Preferences,
     /// `None` only when the executable's own path is unknown; nothing is saved then.
-    prefs_file: Option<PrefsFile>,
+    prefs_file: Option<TomlFile<Preferences>>,
+    /// Written only while *Session restore* is on; `None` as for `prefs_file`.
+    session_file: Option<TomlFile<Session>>,
+    /// Something the session holds has changed since it was last saved.
+    session_changed: bool,
+    /// The window moved or resized since `placement` was last read. Read once the events have
+    /// settled: winit sends `Moved` for a maximise before it knows the window is maximised.
+    window_moved: bool,
+    session_saved_at: Option<Instant>,
+    /// What to scan to rebuild the image list, for the session; set with the image list, or
+    /// before it while the session's own list is being scanned again.
+    opened: Option<Open>,
+    /// The session's place in its image list while that list is being scanned again, so a
+    /// session saved before the scan ends keeps it.
+    resuming: Option<Resume>,
+    /// Where the window last was while neither fullscreen, maximised nor minimised.
+    placement: Option<Placement>,
     /// The preferences screen, while it is open. Like the help overlay, it takes all input
     /// before the keymap.
     preferences_screen: Option<Screen>,
@@ -161,7 +182,7 @@ struct Shown {
     /// Paths with a file action asked for but not finished. A second Delete pressed before the
     /// first one's result would act on the same file again.
     acting_on: HashSet<PathBuf>,
-    /// Where M and C last sent an image; their folder picker opens there. Until the app closes.
+    /// Where M and C last sent an image; their folder picker opens there. Kept in the session.
     target_folder: Option<PathBuf>,
     clipboard: ClipboardThread,
     /// The clipboard image holds the screen: a decode finishing does not replace it, and the next
@@ -200,7 +221,7 @@ impl App {
         match command {
             Some(Command::Open { recursive }) => {
                 if let Some(open) = shown.pick(recursive) {
-                    self.open(open);
+                    self.open(open, None);
                 }
             }
             command => shown.run(command, event_loop),
@@ -208,7 +229,8 @@ impl App {
     }
 
     /// Starts a scan on its own thread, replacing (and so cancelling) any scan still running.
-    fn open(&mut self, open: Open) {
+    /// `resume` restores a session's order and current image.
+    fn open(&mut self, open: Open, resume: Option<Resume>) {
         self.scan_generation += 1;
         let generation = self.scan_generation;
         let proxy = self.proxy.clone();
@@ -217,6 +239,7 @@ impl App {
         self.scan = Some(Scan::spawn(
             open,
             &shown.preferences.folder_filter,
+            resume,
             move |event| {
                 // Fails only once the event loop has exited, when nobody wants the result.
                 let _ = proxy.send_event(AppEvent::Scan { generation, event });
@@ -237,6 +260,7 @@ impl App {
                 self.scan = None;
                 let Found {
                     list,
+                    opened,
                     unreadable_folders,
                     missing,
                 } = found;
@@ -261,7 +285,7 @@ impl App {
                     }
                     shown.notices.notify(text, now);
                 }
-                shown.opened(list, now);
+                shown.opened(list, opened, now);
             }
         }
         shown.window.request_redraw();
@@ -273,16 +297,48 @@ impl ApplicationHandler<AppEvent> for App {
         if self.shown.is_some() {
             return;
         }
-        let (prefs_file, preferences, load_problem) = PrefsFile::beside_exe();
-        let attributes = Window::default_attributes().with_title(TITLE);
+        let (prefs_file, preferences, prefs_problem) = TomlFile::<Preferences>::beside_exe();
+        // Off, the session file is neither read nor written, so it keeps no record of what was
+        // viewed; turned on later, the first save replaces whatever an earlier run left there.
+        let (session_file, session, session_problem) = match preferences.session_restore {
+            true => TomlFile::<Session>::beside_exe(),
+            false => (TomlFile::beside_exe_unread(), Session::default(), None),
+        };
+        let monitors: Vec<Monitor> = event_loop.available_monitors().map(monitor).collect();
+        let primary = event_loop.primary_monitor().map(monitor);
+        let restored = session
+            .window
+            .as_ref()
+            .and_then(|saved| saved.restored(&monitors, primary.as_ref()));
+        let mut attributes = Window::default_attributes().with_title(TITLE);
+        if let Some(placement) = &restored {
+            let [x, y] = placement.position;
+            let [width, height] = placement.size;
+            attributes = attributes
+                .with_position(PhysicalPosition::new(x, y))
+                .with_inner_size(PhysicalSize::new(width, height))
+                .with_maximized(placement.maximized);
+        }
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(e) => return fail(event_loop, &format!("Cannot open a window: {e}")),
         };
-        // The same call F11 makes, on the monitor Windows placed the window on.
-        if preferences.start_fullscreen {
+        // Read before fullscreen covers it; a maximised window's place is the restored one.
+        let placement = restored.clone().or_else(|| plain_placement(&window));
+        // The same call F11 makes, on the monitor the window is on. A session left fullscreen
+        // comes back fullscreen; otherwise the preference decides.
+        if preferences.start_fullscreen || restored.is_some_and(|placement| placement.fullscreen) {
             window.set_fullscreen(Some(Fullscreen::Borderless(window.current_monitor())));
         }
+        // A command-line path is a request for that image: the session's image list gives way,
+        // though its window placement and target folder still apply.
+        let restoring = match self.open_at_start {
+            Some(_) => None,
+            None => session
+                .images
+                .as_ref()
+                .map(|images| (open_of(images), images.resume())),
+        };
         let mut renderer = match Renderer::new(window.clone()) {
             Ok(renderer) => renderer,
             Err(e) => return fail(event_loop, &format!("Cannot start drawing: {e}")),
@@ -335,6 +391,13 @@ impl ApplicationHandler<AppEvent> for App {
             renderer,
             preferences,
             prefs_file,
+            session_file,
+            session_changed: false,
+            window_moved: false,
+            session_saved_at: None,
+            opened: restoring.as_ref().map(|(open, _)| open.clone()),
+            resuming: restoring.as_ref().map(|(_, resume)| resume.clone()),
+            placement,
             preferences_screen: None,
             showing: Showing::Image {
                 path: None,
@@ -351,7 +414,7 @@ impl ApplicationHandler<AppEvent> for App {
             workers,
             file_actions,
             acting_on: HashSet::new(),
-            target_folder: None,
+            target_folder: session.target_folder,
             clipboard,
             pasted: false,
             waiting: None,
@@ -364,14 +427,26 @@ impl ApplicationHandler<AppEvent> for App {
             modifiers: ModifiersState::empty(),
             cursor: [0.0, 0.0],
         });
-        if let Some(problem) = load_problem
-            && let Some(shown) = &mut self.shown
-        {
-            let text = preferences::load_problem(&problem);
-            shown.notices.notify(text, Instant::now());
+        if let Some(shown) = &mut self.shown {
+            let now = Instant::now();
+            if let Some(problem) = prefs_problem {
+                shown
+                    .notices
+                    .notify(preferences::load_problem(&problem), now);
+            }
+            if let Some(problem) = session_problem {
+                shown
+                    .notices
+                    .notify(preferences::session_problem(&problem), now);
+            }
         }
-        if let Some(open) = self.open_at_start.take() {
-            self.open(open);
+        match restoring {
+            Some((open, resume)) => self.open(open, Some(resume)),
+            None => {
+                if let Some(open) = self.open_at_start.take() {
+                    self.open(open, None);
+                }
+            }
         }
     }
 
@@ -436,8 +511,10 @@ impl ApplicationHandler<AppEvent> for App {
                         view.set_window([size.width, size.height]);
                     }
                 }
+                shown.window_moved = true;
                 shown.window.request_redraw();
             }
+            WindowEvent::Moved(_) => shown.window_moved = true,
             WindowEvent::RedrawRequested => {
                 let size = shown.window.inner_size();
                 if size.width > 0 && size.height > 0 {
@@ -482,24 +559,28 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     /// A change made just before closing, such as with the preferences screen still open, is not
-    /// lost. Too late for a notice if the save fails.
+    /// lost. Too late for a notice if a save fails.
     fn exiting(&mut self, _: &ActiveEventLoop) {
         if let Some(shown) = &mut self.shown {
             shown.save_preferences();
+            shown.read_placement();
+            shown.save_session();
         }
     }
 
-    /// Opens a burst of drops. Sleeps until a notice starts fading, `Loading…` is due, a held key
-    /// may advance, the slideshow interval ends or egui asks for a frame; redraws every frame
-    /// while a notice fades. A slideshow waiting on a decode needs no wake-up: the decode result
+    /// Opens a burst of drops and saves a changed session. Sleeps until a notice starts fading,
+    /// `Loading…` is due, a held key may advance, the slideshow interval ends, egui asks for a
+    /// frame or a changed session may be saved; redraws every frame while a notice fades. A slideshow waiting on a decode needs no wake-up: the decode result
     /// is an event, and this runs again after it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if !self.dropped.is_empty() {
             let paths = std::mem::take(&mut self.dropped);
-            self.open(Open::Paths(paths));
+            self.open(Open::Paths(paths), None);
         }
         let Some(shown) = &mut self.shown else { return };
         let now = Instant::now();
+        shown.read_placement();
+        let session_at = shown.save_session_when_due(now);
         if let Some(direction) = shown.advance.tick(now) {
             shown.navigate(direction);
         }
@@ -525,6 +606,7 @@ impl ApplicationHandler<AppEvent> for App {
             loading_at,
             shown.advance.due(),
             shown.slideshow.due().filter(|&due| due > now),
+            session_at,
         ]
         .into_iter()
         .flatten()
@@ -621,6 +703,83 @@ impl Shown {
         }
     }
 
+    /// After a move or resize: a plain window's place is kept; fullscreen or maximised, only
+    /// that state is, so leaving it returns to the place. Minimised, Windows reports nothing
+    /// useful.
+    fn read_placement(&mut self) {
+        if !std::mem::take(&mut self.window_moved) {
+            return;
+        }
+        self.session_changed = true;
+        let window = &self.window;
+        if window.is_minimized() == Some(true) {
+            return;
+        }
+        match (plain_placement(window), &mut self.placement) {
+            (Some(plain), _) => self.placement = Some(plain),
+            (None, Some(placement)) => {
+                placement.fullscreen = window.fullscreen().is_some();
+                placement.maximized = window.is_maximized();
+            }
+            // Never yet plain, so there is no place to go back to.
+            (None, None) => {}
+        }
+    }
+
+    fn session(&self) -> Session {
+        let images = self.opened.as_ref().and_then(|open| {
+            let resume = match &self.images {
+                Some(images) => Resume {
+                    order: images.order(),
+                    current: images.current().map(|entry| entry.path.clone()),
+                    position: images.current_position(),
+                },
+                None => self.resuming.clone()?,
+            };
+            Some(session_images(open, resume))
+        });
+        Session {
+            target_folder: self.target_folder.clone(),
+            images,
+            window: self.placement.clone(),
+        }
+    }
+
+    /// Writes the session file if the session changed, while *Session restore* is on. Only a
+    /// run's first failure gives a notice.
+    fn save_session(&mut self) {
+        self.session_changed = false;
+        self.session_saved_at = Some(Instant::now());
+        if !self.preferences.session_restore {
+            return;
+        }
+        let session = self.session();
+        let Some(file) = &mut self.session_file else {
+            return;
+        };
+        if let Some(error) = file.save(&session) {
+            self.notices
+                .notify(preferences::session_save_failed(&error), Instant::now());
+            self.window.request_redraw();
+        }
+    }
+
+    /// Saves a changed session once `SESSION_INTERVAL` has passed since the last save; until
+    /// then, returns when it will have.
+    fn save_session_when_due(&mut self, now: Instant) -> Option<Instant> {
+        if !self.session_changed {
+            return None;
+        }
+        let due = self
+            .session_saved_at
+            .map_or(now, |at| at + SESSION_INTERVAL);
+        if now < due {
+            return Some(due);
+        }
+        self.save_session();
+        None
+    }
+
     fn view(&mut self) -> Option<&mut View> {
         match &mut self.showing {
             Showing::Image { view, .. } => Some(view),
@@ -631,10 +790,13 @@ impl Shown {
     /// A finished scan replaces the image list. Cached images it still holds are kept, at their
     /// new positions. An open that found nothing keeps the old list: its notice says so, and the
     /// owner carries on where they were.
-    fn opened(&mut self, list: ImageList, now: Instant) {
+    fn opened(&mut self, list: ImageList, opened: Open, now: Instant) {
         if list.len() == 0 {
             return;
         }
+        self.opened = Some(opened);
+        self.resuming = None;
+        self.session_changed = true;
         if self.slideshow.stop() {
             self.notices
                 .notify_as(SLIDESHOW_NOTICE, "Slideshow off", now);
@@ -679,6 +841,7 @@ impl Shown {
     /// Every change, manual or not, gives the slideshow a full interval.
     fn moved(&mut self, direction: Direction, wrapped: bool) {
         let now = Instant::now();
+        self.session_changed = true;
         self.slideshow.restart(now);
         if wrapped {
             let text = match direction {
@@ -707,6 +870,7 @@ impl Shown {
         };
         let order = change(images.order());
         images.set_order(order);
+        self.session_changed = true;
         self.cache
             .reindex(images.entries().iter().map(|entry| entry.path.as_path()));
         self.retarget();
@@ -866,6 +1030,7 @@ impl Shown {
                     return;
                 };
                 self.target_folder = Some(folder.clone());
+                self.session_changed = true;
                 Action::Transfer(transfer, folder)
             }
         };
@@ -908,6 +1073,8 @@ impl Shown {
         let Some(removed) = images.remove(path) else {
             return;
         };
+        // The current image's position may have moved.
+        self.session_changed = true;
         self.turns.remove(path);
         self.cache
             .reindex(images.entries().iter().map(|entry| entry.path.as_path()));
@@ -1221,6 +1388,56 @@ fn file_name(path: &Path) -> String {
         .unwrap_or(path.as_os_str())
         .to_string_lossy()
         .into_owned()
+}
+
+/// The scan that rebuilds a saved image list. `Session::validated` leaves a recursive open
+/// exactly one path.
+fn open_of(images: &session::Images) -> Open {
+    match images.route {
+        Route::Paths => Open::Paths(images.paths.clone()),
+        Route::Recursive => Open::Recursive(images.paths[0].clone()),
+    }
+}
+
+fn session_images(open: &Open, resume: Resume) -> session::Images {
+    let (route, paths) = match open {
+        Open::Paths(paths) => (Route::Paths, paths.clone()),
+        Open::Recursive(root) => (Route::Recursive, vec![root.clone()]),
+    };
+    session::Images {
+        route,
+        paths,
+        current: resume.current,
+        position: resume.position,
+        order: resume.order,
+    }
+}
+
+fn monitor(handle: MonitorHandle) -> Monitor {
+    let position = handle.position();
+    let size = handle.size();
+    Monitor {
+        name: handle.name(),
+        position: [position.x, position.y],
+        size: [size.width, size.height],
+    }
+}
+
+/// The window's place while it is neither fullscreen nor maximised, which report the monitor's
+/// area instead.
+fn plain_placement(window: &Window) -> Option<Placement> {
+    if window.fullscreen().is_some() || window.is_maximized() {
+        return None;
+    }
+    let position = window.outer_position().ok()?;
+    let size = window.inner_size();
+    Some(Placement {
+        position: [position.x, position.y],
+        size: [size.width, size.height],
+        monitor: window.current_monitor().and_then(|monitor| monitor.name()),
+        maximized: false,
+        fullscreen: false,
+    })
 }
 
 /// Startup failures come before any overlay exists, and release builds have no console, so a

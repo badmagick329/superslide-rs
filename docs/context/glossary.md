@@ -19,12 +19,12 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Magnification filter | How pixels are drawn when zoomed past native size: linear (smooth) or nearest (sharp); Ctrl+F toggles it. | bilinear filtering | |
 | Notice | A short text shown over the image that fades after a few seconds, for errors, progress and confirmations. | toast, popup | |
 | Pan | Moving a zoomed image within the window by drag or arrow keys. | scroll | |
-| Preferences | The owner's persisted options, kept in `superslide-prefs.toml` beside the executable, and the screen opened with P that edits them. | settings, config, options | `prefs` slice; the options are `Preferences`, the file `PrefsFile`, the open screen `Screen` |
+| Preferences | The owner's persisted options, kept in `superslide-prefs.toml` beside the executable, and the screen opened with P that edits them. | settings, config, options | `prefs` slice; the options are `Preferences`, the file `TomlFile<Preferences>`, the open screen `Screen` |
 | Preload cache | Decoded images held on the GPU under a memory budget so navigation shows them without waiting. | | `PreloadCache` |
 | Preload window | The images the preload cache wants: the current image, 3 ahead and 1 behind in the direction of travel. | | `preload_window` |
 | Recursive open | Opening a folder together with all its subfolders (Shift+O); sets the sort mode to shuffle. | | |
 | Screen rotation | Turning how the current image is drawn by 90°. Never written to the file; lasts until the app closes. | lossless rotation, EXIF rotation | |
-| Session restore | On startup, reopening the last image list, current image, sort mode, shuffle order and window placement. | | `Session` |
+| Session restore | On startup, reopening the last image list, current image, sort mode, shuffle order and window placement, kept in `superslide-session.toml` beside the executable. | | `Session`; where the window reopens, `Placement` |
 | Shuffle | The sort mode that gives the image list a random order, kept until the next shuffle. | random | |
 | Slideshow | Timed automatic advance to the next image, toggled with A. | | `Slideshow` |
 | Sort mode | The image list's order: name (N), date (D), size (Z) or shuffle (S); V reverses it. | | `SortMode` |

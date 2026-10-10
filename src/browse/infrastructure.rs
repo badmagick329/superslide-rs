@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use walkdir::WalkDir;
 
-use crate::browse::domain::{Entry, ImageList, Order, SortKey, SortMode, folder};
+use crate::browse::domain::{Entry, ImageList, Order, Resume, SortKey, SortMode, folder};
 use crate::image_file::domain::Format;
 
 /// Progress counts go out at most this often; a scan that finishes sooner sends none, so a quick
@@ -24,7 +24,7 @@ pub fn is_image(path: &Path) -> bool {
 }
 
 /// What to scan; one per opening route in `docs/context/architecture.md` *Opening*.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Open {
     /// Command-line paths or one burst of drops. A lone file opens its folder at that file; a
     /// lone folder opens its images; several paths open the union of each file and each folder's
@@ -38,6 +38,9 @@ pub enum Open {
 #[derive(Debug)]
 pub struct Found {
     pub list: ImageList,
+    /// What to scan to rebuild this list: the paths made absolute, and a lone file replaced by
+    /// its folder, so the list still opens once that file is gone.
+    pub opened: Open,
     /// Folders whose listing failed, skipped.
     pub unreadable_folders: usize,
     /// Paths given to open that do not exist or cannot be read.
@@ -64,10 +67,11 @@ impl Drop for Scan {
 
 impl Scan {
     /// `send` receives progress, then the result; nothing once cancelled. It runs on the scan
-    /// thread.
+    /// thread. With `resume`, the list takes its order and current image instead of the route's.
     pub fn spawn(
         open: Open,
         folder_filter: &[String],
+        resume: Option<Resume>,
         mut send: impl FnMut(ScanEvent) + Send + 'static,
     ) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
@@ -76,9 +80,13 @@ impl Scan {
         thread::Builder::new()
             .name("scan".to_owned())
             .spawn(move || {
-                let found = scan(&open, &folder_filter, &cancelled, |count| {
-                    send(ScanEvent::Progress(count))
-                });
+                let found = scan(
+                    &open,
+                    &folder_filter,
+                    resume.as_ref(),
+                    &cancelled,
+                    |count| send(ScanEvent::Progress(count)),
+                );
                 if let Some(found) = found {
                     send(ScanEvent::Done(found));
                 }
@@ -93,6 +101,7 @@ impl Scan {
 pub fn scan(
     open: &Open,
     folder_filter: &[String],
+    resume: Option<&Resume>,
     cancel: &AtomicBool,
     progress: impl FnMut(usize),
 ) -> Option<Found> {
@@ -109,9 +118,10 @@ pub fn scan(
         unreadable_folders: 0,
         missing: Vec::new(),
     };
-    let (current, order) = match open {
+    let (current, order, opened) = match open {
         Open::Paths(paths) => {
             let paths: Vec<PathBuf> = paths.iter().map(|path| absolute(path)).collect();
+            let mut opened = Open::Paths(paths.clone());
             let current = match paths.as_slice() {
                 [path] if !path.is_dir() => {
                     // A lone file opens its whole folder; the file itself is checked here so a
@@ -119,6 +129,7 @@ pub fn scan(
                     if walker.check(path) {
                         walker.add_folder(folder(path), false)?;
                     }
+                    opened = Open::Paths(vec![folder(path).to_owned()]);
                     Some(path.clone())
                 }
                 _ => {
@@ -132,18 +143,24 @@ pub fn scan(
                     paths.iter().find(|path| is_image(path)).cloned()
                 }
             };
-            (current, Order::new(SortMode::By(SortKey::Name)))
+            (current, Order::new(SortMode::By(SortKey::Name)), opened)
         }
         Open::Recursive(root) => {
             let root = absolute(root);
             if walker.check(&root) {
                 walker.add_folder(&root, true)?;
             }
-            (None, Order::new(SortMode::new_shuffle()))
+            let order = Order::new(SortMode::new_shuffle());
+            (None, order, Open::Recursive(root))
         }
     };
+    let list = match resume {
+        Some(resume) => ImageList::resumed(walker.entries, resume),
+        None => ImageList::new(walker.entries, current.as_deref(), order),
+    };
     Some(Found {
-        list: ImageList::new(walker.entries, current.as_deref(), order),
+        list,
+        opened,
         unreadable_folders: walker.unreadable_folders,
         missing: walker.missing,
     })
@@ -266,7 +283,7 @@ mod tests {
 
     fn open(open: Open, filter: &[&str]) -> Found {
         let filter: Vec<String> = filter.iter().map(|name| name.to_string()).collect();
-        scan(&open, &filter, &AtomicBool::new(false), |_| {}).unwrap()
+        scan(&open, &filter, None, &AtomicBool::new(false), |_| {}).unwrap()
     }
 
     fn relative(path: &Path, root: &Path) -> String {
@@ -293,6 +310,25 @@ mod tests {
         assert_eq!(names(&found.list, root.path()), ["a.png", "b.jpg"]);
         assert_eq!(current(&found.list, root.path()), "b.jpg");
         assert_eq!(found.list.order(), Order::new(SortMode::By(SortKey::Name)));
+        // Its folder is what reopens it.
+        assert_eq!(found.opened, Open::Paths(vec![root.path().to_owned()]));
+    }
+
+    #[test]
+    fn a_resumed_scan_takes_the_saved_order_and_image() {
+        let root = tree(&["a.jpg", "b.jpg", "c.jpg"]);
+        let resume = Resume {
+            order: Order {
+                reversed: true,
+                ..Order::new(SortMode::By(SortKey::Name))
+            },
+            current: Some(root.path().join("b.jpg")),
+            position: 0,
+        };
+        let open = Open::Recursive(root.path().to_owned());
+        let found = scan(&open, &[], Some(&resume), &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(names(&found.list, root.path()), ["c.jpg", "b.jpg", "a.jpg"]);
+        assert_eq!(current(&found.list, root.path()), "b.jpg");
     }
 
     #[test]
@@ -367,6 +403,6 @@ mod tests {
         let root = tree(&["a.jpg"]);
         let cancel = AtomicBool::new(true);
         let open = Open::Recursive(root.path().to_owned());
-        assert!(scan(&open, &[], &cancel, |_| {}).is_none());
+        assert!(scan(&open, &[], None, &cancel, |_| {}).is_none());
     }
 }

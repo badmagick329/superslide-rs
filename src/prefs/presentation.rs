@@ -1,4 +1,4 @@
-//! The preferences screen drawn with egui, and the notices the preferences file gives.
+//! The preferences screen drawn with egui, and the notices the preferences and session files give.
 
 use std::io;
 
@@ -8,10 +8,11 @@ use egui::{
 };
 
 use crate::info_overlay::domain::InfoOverlay;
+use crate::prefs::domain::session::Session;
 use crate::prefs::domain::{
     ADVANCE_LIMIT_MS, PRELOAD_BUDGET_MB, Preferences, SLIDESHOW_INTERVAL_S, Screen, folder_filter,
 };
-use crate::prefs::infrastructure::{FILE_NAME, LoadProblem};
+use crate::prefs::infrastructure::{LoadProblem, Stored};
 use crate::view::domain::MagnificationFilter;
 
 /// The help overlay's width; taller than it, so every row fits an 800 × 600 window at 125 %
@@ -29,9 +30,10 @@ const COLUMN_GAP: f32 = 16.0;
 
 pub fn load_problem(problem: &LoadProblem) -> String {
     match problem {
-        LoadProblem::Damaged => {
-            format!("Preferences were unreadable and are reset; the old file is {FILE_NAME}.bak")
-        }
+        LoadProblem::Damaged => format!(
+            "Preferences were unreadable and are reset; the old file is {}.bak",
+            Preferences::FILE_NAME
+        ),
         LoadProblem::DamagedNotKept(reason) => {
             format!("Preferences were unreadable and are reset: {reason}")
         }
@@ -41,8 +43,27 @@ pub fn load_problem(problem: &LoadProblem) -> String {
     }
 }
 
+pub fn session_problem(problem: &LoadProblem) -> String {
+    match problem {
+        LoadProblem::Damaged => format!(
+            "The last session was unreadable and is not restored; the old file is {}.bak",
+            Session::FILE_NAME
+        ),
+        LoadProblem::DamagedNotKept(reason) => {
+            format!("The last session was unreadable and is not restored: {reason}")
+        }
+        LoadProblem::Unreadable(reason) => {
+            format!("Cannot read the last session, so it is not restored: {reason}")
+        }
+    }
+}
+
 pub fn save_failed(error: &io::Error) -> String {
     format!("Cannot save preferences: {error}")
+}
+
+pub fn session_save_failed(error: &io::Error) -> String {
+    format!("Cannot save the session: {error}")
 }
 
 /// Centred across the image, its top a twentieth of the way down. Every
@@ -201,10 +222,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_damaged_notice_names_the_backup() {
+    fn the_damaged_notices_name_the_backups() {
         assert_eq!(
             load_problem(&LoadProblem::Damaged),
             "Preferences were unreadable and are reset; the old file is superslide-prefs.toml.bak"
         );
+        assert!(session_problem(&LoadProblem::Damaged).ends_with("superslide-session.toml.bak"));
     }
 }

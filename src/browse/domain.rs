@@ -45,6 +45,16 @@ impl SortMode {
     }
 }
 
+/// Where a restored session left the image list, applied by the scan that rebuilds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Resume {
+    pub order: Order,
+    pub current: Option<PathBuf>,
+    /// The current image's position, for when its file is gone: the image now there took its
+    /// place.
+    pub position: usize,
+}
+
 /// Everything that decides the image list's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Order {
@@ -119,6 +129,21 @@ impl ImageList {
         };
         arrange(&mut list.entries, order);
         list.current = current.and_then(|path| list.position(path)).unwrap_or(0);
+        list
+    }
+
+    /// In `resume`'s order at its current image. If that file is gone, the image now at its
+    /// position; past the end, the first, as after deleting the last image.
+    pub fn resumed(entries: Vec<Entry>, resume: &Resume) -> Self {
+        let mut list = Self::new(entries, None, resume.order);
+        list.current = resume
+            .current
+            .as_deref()
+            .and_then(|path| list.position(path))
+            .unwrap_or(match resume.position < list.len() {
+                true => resume.position,
+                false => 0,
+            });
         list
     }
 
@@ -262,10 +287,9 @@ fn arrange(entries: &mut [Entry], order: Order) {
             }
         }),
         SortMode::Shuffle { seed } => {
-            // Scan order depends on the filesystem; starting from path order makes a seed give
-            // the same shuffle every time.
-            entries.sort_unstable_by(|a, b| a.path.as_os_str().cmp(b.path.as_os_str()));
-            shuffle(entries, seed);
+            // Stable (`sort_by_cached_key` breaks ties on the index), but a tie needs two paths
+            // with the same 64-bit key.
+            entries.sort_by_cached_key(|entry| shuffle_key(seed, &entry.path));
             if order.reversed {
                 entries.reverse();
             }
@@ -340,15 +364,19 @@ fn split_digits(text: &[u8]) -> (&[u8], &[u8]) {
     (&digits[zeros..], rest)
 }
 
-/// Fisher–Yates driven by SplitMix64: tiny, and the same on every platform and Rust version,
-/// which a session-restored shuffle depends on. The modulo bias is below 1e-12 for any real
-/// image list.
-fn shuffle<T>(items: &mut [T], seed: u64) {
-    let mut state = seed;
-    for i in (1..items.len()).rev() {
-        let j = (split_mix_64(&mut state) % (i as u64 + 1)) as usize;
-        items.swap(i, j);
-    }
+/// Where `path` falls in the shuffle `seed` makes. It depends on that path and the seed alone, so
+/// the same seed gives the same order whatever the scan order, and images added or removed
+/// between runs leave the others' order as it was, which session restore relies on. FNV-1a and
+/// SplitMix64 are tiny and the same on every platform and Rust version, unlike `std`'s hashers.
+fn shuffle_key(seed: u64, path: &Path) -> u64 {
+    let fnv = path
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(0xCBF2_9CE4_8422_2325_u64, |hash, &byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01B3)
+        });
+    split_mix_64(&mut (seed ^ fnv))
 }
 
 fn split_mix_64(state: &mut u64) -> u64 {
@@ -467,11 +495,20 @@ mod tests {
         assert_eq!(every, expected, "a shuffle keeps every image once");
         // Pinned: a change to the generator would scramble every restored session.
         assert_eq!(&first[..3], PINNED_SHUFFLE);
+        // Removing an image leaves the others in the same order.
+        let fewer: Vec<Entry> = many
+            .iter()
+            .filter(|entry| entry.path != Path::new(&first[1]))
+            .cloned()
+            .collect();
+        let mut kept = first.clone();
+        kept.remove(1);
+        assert_eq!(shuffled(fewer, 7), kept);
         assert!(matches!(SortMode::new_shuffle(), SortMode::Shuffle { seed } if seed != 7));
         assert_ne!(SortMode::new_shuffle(), SortMode::new_shuffle());
     }
 
-    const PINNED_SHUFFLE: [&str; 3] = ["f/3.jpg", "f/23.jpg", "f/9.jpg"];
+    const PINNED_SHUFFLE: [&str; 3] = ["f/49.jpg", "f/12.jpg", "f/33.jpg"];
 
     #[test]
     fn grouping_orders_folders_naturally_and_sorts_inside_each() {
@@ -543,6 +580,31 @@ mod tests {
             assert_eq!(list.order(), order);
             assert_eq!(list.current().unwrap().path, current, "{order:?}");
         }
+    }
+
+    #[test]
+    fn a_resumed_list_takes_its_order_and_place_or_the_image_now_there() {
+        // Reversed name order: img10, IMG2, img1, b.
+        let resume = |current: &str, position| Resume {
+            order: Order {
+                reversed: true,
+                ..by(SortKey::Name)
+            },
+            current: Some(PathBuf::from(current)),
+            position,
+        };
+        let at = |resume: Resume| {
+            let list = ImageList::resumed(sample(), &resume);
+            assert_eq!(list.order(), resume.order);
+            list.current().unwrap().path.to_str().unwrap().to_owned()
+        };
+        assert_eq!(at(resume("f/img1.jpg", 0)), "f/img1.jpg");
+        // Gone: the image at its position took its place.
+        assert_eq!(at(resume("f/gone.jpg", 1)), "f/IMG2.jpg");
+        assert_eq!(at(resume("f/gone.jpg", 4)), "f/img10.jpg");
+        let mut none = resume("", 2);
+        none.current = None;
+        assert_eq!(at(none), "f/img1.jpg");
     }
 
     #[test]

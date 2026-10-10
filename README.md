@@ -10,7 +10,7 @@ Runs on Windows 10 and 11 (64-bit).
 
 ## Use
 
-Open images by dragging a file or folder onto the window, or press **O**.
+Open images by dragging a file or folder onto the window, or press **O**. Next time it opens where you left off.
 
 | Key | Does |
 | --- | --- |
@@ -35,10 +35,6 @@ Open images by dragging a file or folder onto the window, or press **O**.
 Move and copy never overwrite a file: if the folder already has one with that name, nothing happens and you get a notice.
 
 [All keys](docs/context/keymap.md)
-
-## Planned
-
-- Reopening where you left off
 
 ## Build from source
 
