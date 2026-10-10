@@ -22,13 +22,6 @@ pub enum InfoOverlay {
 const NOTICE_SHOWN: Duration = Duration::from_secs(3);
 const NOTICE_FADE: Duration = Duration::from_millis(500);
 /// More than this and the oldest goes; a burst of errors must not cover the image.
-#[cfg_attr(
-    not(any(debug_assertions, test)),
-    expect(
-        dead_code,
-        reason = "scaffold: only the debug F9 key adds notices so far"
-    )
-)]
 const MAX_NOTICES: usize = 3;
 /// Gap from the window corner and between notices, in points.
 const NOTICE_SPACING: f32 = 12.0;
@@ -43,6 +36,8 @@ pub struct Notices {
 
 #[derive(Debug)]
 struct Notice {
+    /// Notices with the same key replace each other; for most, the key is the text.
+    key: String,
     text: String,
     since: Instant,
 }
@@ -50,17 +45,24 @@ struct Notice {
 impl Notices {
     /// Repeating a text already shown restarts its timer and moves it to the bottom, so holding a
     /// key that fails does not stack copies.
-    #[cfg_attr(
-        not(any(debug_assertions, test)),
-        expect(dead_code, reason = "scaffold: only the debug F9 key calls it so far")
-    )]
     pub fn notify(&mut self, text: impl Into<String>, now: Instant) {
         let text = text.into();
-        self.shown.retain(|notice| notice.text != text);
+        self.notify_as(text.clone(), text, now);
+    }
+
+    /// Replaces the notice shown under `key`, if any, and moves it to the bottom: for a text that
+    /// changes, such as a progress count.
+    pub fn notify_as(&mut self, key: impl Into<String>, text: impl Into<String>, now: Instant) {
+        let key = key.into();
+        self.shown.retain(|notice| notice.key != key);
         if self.shown.len() == MAX_NOTICES {
             self.shown.pop_front();
         }
-        self.shown.push_back(Notice { text, since: now });
+        self.shown.push_back(Notice {
+            key,
+            text: text.into(),
+            since: now,
+        });
     }
 
     /// When the notices next look different: `now` while one is fading (redraw every frame),
@@ -111,6 +113,19 @@ impl Notices {
     }
 }
 
+/// `12345` as `12,345`, for counts in notices.
+pub fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut text = String::with_capacity(digits.len() * 4 / 3);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
 fn opacity(since: Instant, now: Instant) -> f32 {
     let fading = now.saturating_duration_since(since + NOTICE_SHOWN);
     1.0 - (fading.as_secs_f32() / NOTICE_FADE.as_secs_f32()).min(1.0)
@@ -142,6 +157,25 @@ mod tests {
             notices.next_change(start + Duration::from_secs(2)),
             Some(start + Duration::from_secs(2) + NOTICE_SHOWN)
         );
+    }
+
+    #[test]
+    fn a_keyed_notice_replaces_its_earlier_text() {
+        let start = Instant::now();
+        let mut notices = Notices::default();
+        notices.notify_as("scan", "Scanning… 10", start);
+        notices.notify("other", start);
+        notices.notify_as("scan", "Scanning… 20", start + Duration::from_secs(1));
+        assert_eq!(texts(&notices), ["other", "Scanning… 20"]);
+    }
+
+    #[test]
+    fn thousands_are_separated() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1000), "1,000");
+        assert_eq!(thousands(12345), "12,345");
+        assert_eq!(thousands(1234567), "1,234,567");
     }
 
     #[test]

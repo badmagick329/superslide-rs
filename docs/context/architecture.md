@@ -27,9 +27,9 @@ One binary crate, `superslide-rs` ([Cargo.toml](../../Cargo.toml)), producing `s
 
 - **Main thread**: the winit event loop, all state, all wgpu calls, egui. Nothing on it blocks on decoding or scanning; the only blocking calls are the native file and folder dialogs, which are modal by nature.
 - **Decode workers**: `min(available_parallelism - 1, 4)` threads, at least 1, taking jobs from the preload cache's priority queue.
-- **Scan thread**: one per open, walking the filesystem; sends the finished image list back, plus progress counts for a notice.
+- **Scan thread**: one per open, walking the filesystem; sends the finished, sorted image list back, plus progress counts for a notice. Dropping the `library::Scan` handle cancels it, and the app tags each scan's events with a generation number, so a newer open replaces an older one and its late events are ignored.
 
-Workers and the scan thread report through a channel and wake the loop with `EventLoopProxy::send_event`. GPU upload happens on the main thread when the result arrives.
+Workers and the scan thread send `app::AppEvent`s through the event loop's `EventLoopProxy`, which also wakes the loop. GPU upload happens on the main thread when the result arrives.
 
 ## Image change
 
@@ -65,7 +65,7 @@ Navigation wraps from the last image to the first and back, with a notice saying
 
 ## Overlays and notices
 
-- Notices live in [ui.rs](../../src/ui.rs) as `Notices`: top-right, oldest on top, at most 3 (a fourth drops the oldest). Each is fully visible for 3 s, then fades out over 0.5 s. Repeating a shown text restarts its timer and moves it to the bottom instead of stacking. White 20 pt text on black at 240/255 alpha: the surface is sRGB, so egui blends in linear light, and lower alphas leave a mid-grey backing on white images. The top-left corner is left to the info overlay.
+- Notices live in [ui.rs](../../src/ui.rs) as `Notices`: top-right, oldest on top, at most 3 (a fourth drops the oldest). Each is fully visible for 3 s, then fades out over 0.5 s. Repeating a shown text restarts its timer and moves it to the bottom instead of stacking; `Notices::notify_as` gives a changing text, such as scan progress, a key so each update replaces the last. White 20 pt text on black at 240/255 alpha: the surface is sRGB, so egui blends in linear light, and lower alphas leave a mid-grey backing on white images. The top-left corner is left to the info overlay.
 - Redraws are on demand. `App::about_to_wait` sleeps until a notice starts fading or egui asks for a frame (it does after an area's first frame, which it spends measuring with nothing visible), and redraws every frame while a notice fades. Nothing animates once notices are gone: idle CPU is zero.
 - Input routing: every window event goes to egui first, so its pointer and modifier state stay current, but egui keeps an event only while one of its widgets has focus (the preferences screen). Otherwise all input goes to `keymap`. Notices never take clicks, so a drag that starts on a notice still pans.
 
@@ -91,14 +91,26 @@ One timer drives both, through `ControlFlow::WaitUntil`.
 
 ## Opening
 
+Built in [library.rs](../../src/library.rs): `library::Open` names the route, `library::scan` walks it (`walkdir`) and returns a `Found` holding the `ImageList`, the count of unreadable folders (skipped, never fatal) and the paths given to open that do not exist. Only command-line paths are wired so far; they open through the same `Open::Paths` route drops will use. Until navigation lands, the result is only a notice (`12,345 images`, plus `Skipped 3 unreadable folders` or `Not found: …` when they apply).
+
 | Route | Image list |
 | --- | --- |
 | A file (command line, drop, O) | Images in its folder, not recursive; current image is that file; sort by name. |
 | A folder (command line, drop) | Images in it, not recursive; sort by name. |
 | Shift+O | Recursive open of the chosen folder; shuffle. |
-| Several drops in one burst | The union, deduplicated; sort by name. |
+| Several paths (command line, or drops in one burst) | Each file itself and each folder's images, not recursive, deduplicated; current image is the first image file named; sort by name. |
 
-The folder filter applies to every folder below the opened root, matching folder names case-insensitively. Name sort is natural and case-insensitive (`img2` before `img10`). Date is the file's modified time. Shuffle stores its seed so session restore can rebuild the same order.
+- The folder filter applies to every folder below the opened root, matching folder names case-insensitively; the root itself is never filtered.
+- Progress goes out at most every 100 ms, so a scan that finishes sooner shows no `Scanning…` notice. Measured: 100,000 files scanned in 0.3 s warm (release), 1.4 s in a debug build while zooming, with the window redrawing throughout.
+
+## Image list order
+
+`library::ImageList` holds the entries in display order and the current image; `library::Order` is the sort mode plus reverse and grouping. `ImageList::set_order` re-sorts in memory and keeps the current image.
+
+- Name sort is natural and case-insensitive (`img2` before `img10`), on the file name only; date is the file's modified time; size is bytes. Ties fall back to name, then the full path, so every order is total.
+- Shuffle starts from path order and runs Fisher–Yates on SplitMix64 from the stored `u64` seed, so a seed rebuilds the same order whatever the scan order; a test pins the output, since changing the generator would scramble restored sessions.
+- Reverse turns the order within each group round; grouping keeps groups in natural folder-path order either way. A grouped shuffle shuffles inside each group.
+- Each entry caches its lowercased file name and folder at scan time. Without that, re-sorting 100,000 images took 330 ms; with it, about 55 ms (release), on the main thread.
 
 ## Files and persistence
 

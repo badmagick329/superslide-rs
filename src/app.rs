@@ -2,21 +2,23 @@
 
 #![expect(dead_code, reason = "scaffold: most commands arrive with later issues")]
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::decode::Orientation;
 use crate::files::Transfer;
 use crate::keymap;
-use crate::library::{Direction, SortKey};
+use crate::library::{Direction, Found, ImageList, Open, Scan, ScanEvent, SortKey};
+use crate::prefs::Preferences;
 use crate::render::{ImageTexture, Renderer, UiFrame};
-use crate::ui::Notices;
+use crate::ui::{Notices, thousands};
 use crate::view::{Anchor, PanBy, Turn, View};
 
 /// Everything the owner can ask for. Every row of `docs/context/keymap.md` maps to a variant;
@@ -60,10 +62,25 @@ pub enum Command {
     TestNotice,
 }
 
+/// Sent to the event loop from other threads through its proxy.
+pub enum AppEvent {
+    /// `generation` tells a superseded scan's late events from the current scan's.
+    Scan { generation: u64, event: ScanEvent },
+}
+
+/// Key of the notice that shows scan progress, then its result.
+const SCAN_NOTICE: &str = "scan";
+
 /// Window and GPU state exist from the first `resumed` on; Windows sends it once, at startup.
-#[derive(Default)]
 pub struct App {
     shown: Option<Shown>,
+    proxy: EventLoopProxy<AppEvent>,
+    /// Command-line paths, opened once the window exists to show progress.
+    open_at_start: Option<Open>,
+    /// Dropping it cancels the scan.
+    scan: Option<Scan>,
+    scan_generation: u64,
+    images: Option<ImageList>,
 }
 
 struct Shown {
@@ -83,7 +100,76 @@ struct Shown {
     cursor: [f32; 2],
 }
 
-impl ApplicationHandler for App {
+impl App {
+    pub fn new(proxy: EventLoopProxy<AppEvent>, paths: Vec<PathBuf>) -> Self {
+        Self {
+            shown: None,
+            proxy,
+            open_at_start: (!paths.is_empty()).then_some(Open::Paths(paths)),
+            scan: None,
+            scan_generation: 0,
+            images: None,
+        }
+    }
+
+    /// Starts a scan on its own thread, replacing (and so cancelling) any scan still running.
+    fn open(&mut self, open: Open) {
+        self.scan_generation += 1;
+        let generation = self.scan_generation;
+        let proxy = self.proxy.clone();
+        // Preferences are not loaded yet; the default folder filter stands in.
+        let folder_filter = Preferences::default().folder_filter;
+        self.scan = Some(Scan::spawn(open, &folder_filter, move |event| {
+            // Fails only once the event loop has exited, when nobody wants the result.
+            let _ = proxy.send_event(AppEvent::Scan { generation, event });
+        }));
+    }
+
+    fn scanned(&mut self, event: ScanEvent) {
+        // Scans start only once the window exists.
+        let Some(shown) = &mut self.shown else { return };
+        let now = Instant::now();
+        match event {
+            ScanEvent::Progress(count) => {
+                let text = format!("Scanning… {}", thousands(count));
+                shown.notices.notify_as(SCAN_NOTICE, text, now);
+            }
+            ScanEvent::Done(found) => {
+                self.scan = None;
+                let Found {
+                    list,
+                    unreadable_folders,
+                    missing,
+                } = found;
+                let text = match list.len() {
+                    0 => "No images found".to_owned(),
+                    1 => "1 image".to_owned(),
+                    count => format!("{} images", thousands(count)),
+                };
+                shown.notices.notify_as(SCAN_NOTICE, text, now);
+                if unreadable_folders > 0 {
+                    let plural = if unreadable_folders == 1 { "" } else { "s" };
+                    let text = format!(
+                        "Skipped {} unreadable folder{plural}",
+                        thousands(unreadable_folders)
+                    );
+                    shown.notices.notify(text, now);
+                }
+                if let Some(first) = missing.first() {
+                    let mut text = format!("Not found: {}", first.display());
+                    if missing.len() > 1 {
+                        text += &format!(" and {} more", thousands(missing.len() - 1));
+                    }
+                    shown.notices.notify(text, now);
+                }
+                self.images = Some(list);
+            }
+        }
+        shown.window.request_redraw();
+    }
+}
+
+impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.shown.is_some() {
             return;
@@ -128,6 +214,18 @@ impl ApplicationHandler for App {
             modifiers: ModifiersState::empty(),
             cursor: [0.0, 0.0],
         });
+        if let Some(open) = self.open_at_start.take() {
+            self.open(open);
+        }
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::Scan { generation, event } if generation == self.scan_generation => {
+                self.scanned(event)
+            }
+            AppEvent::Scan { .. } => {}
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
