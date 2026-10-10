@@ -1,6 +1,6 @@
 # Keymap
 
-The v1 bindings; the `keymap` module implements exactly this table. Change both together.
+The v1 bindings; [keymap.rs](../../src/keymap.rs) implements exactly this table, rows arriving with their issues (so far F11, Enter and Esc). Change both together.
 
 | Input | Command |
 | --- | --- |
@@ -27,4 +27,4 @@ The v1 bindings; the `keymap` module implements exactly this table. Change both 
 | Ctrl+C / Ctrl+V | Copy the current image to the clipboard / show the clipboard image |
 | P | Open or close preferences |
 
-Holding Space or Backspace repeats under the advance limit. Bindings the original had and v1 drops: H (no transitions to skip), t/T (contrast), Alt (no menu).
+Holding Space or Backspace repeats under the advance limit; every other key acts once per press. Fullscreen is borderless on the window's current monitor, with no display mode change. Bindings the original had and v1 drops: H (no transitions to skip), t/T (contrast), Alt (no menu).

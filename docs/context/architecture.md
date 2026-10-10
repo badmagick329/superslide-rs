@@ -53,15 +53,17 @@ Navigation wraps from the last image to the first and back, with a notice saying
 
 ## Rendering
 
-- `wgpu` on the Dx12 backend, `PresentMode::Fifo` (vsync, no tearing). If no hardware adapter is found, request one with `force_fallback_adapter` (WARP).
+- Built in [render.rs](../../src/render.rs) and [quad.wgsl](../../src/quad.wgsl): `wgpu` on the Dx12 backend, an sRGB surface format, `PresentMode::Fifo` (vsync, no tearing). If no hardware adapter is found, request one with `force_fallback_adapter` (WARP); `SUPERSLIDE_FORCE_WARP=1` forces that path for testing. The chosen adapter is logged to stderr, which only debug builds show.
+- The device is requested with the adapter's own limits, not wgpu's defaults: the defaults cap textures at 8192 px where Dx12 hardware takes 16384. `Renderer::max_texture_dimension` holds the result for decode.
+- A startup failure (no window, no adapter, no device) shows a message box and exits: no overlay exists yet and release builds have no console.
 - One texture per cached image, `Rgba8UnormSrgb`, full mip chain (`floor(log2(max(w, h))) + 1` levels), generated after upload by a render pass per level that samples the level above with a linear filter.
-- One quad, one draw. A uniform holds a 2×2 matrix and offset from `view`, mapping the quad to window pixels. EXIF orientation (including its mirrorings) and screen rotation are both folded into that matrix.
+- One quad, one draw, no vertex buffer. A uniform holds a 2×2 matrix and offset from `view` (`view::Transform`, which documents the coordinates) plus the window size, mapping the quad to window pixels. EXIF orientation (including its mirrorings) and screen rotation are both folded into that matrix.
 - Sampling: trilinear by default. Ctrl+F switches magnification to nearest, for sharp pixels at high zoom; minification stays mipmapped linear so a shrunk image never aliases.
 - egui draws on the same device after the image, in the same frame.
 
 ## View transform
 
-State per image: zoom factor relative to fit, the image point at the window centre, quarter-turns of screen rotation. Opening an image resets to fit and centred; screen rotation survives navigation away and back, per path, until the app closes.
+State per image: zoom factor relative to fit, the image point at the window centre, quarter-turns of screen rotation. Opening an image resets to fit and centred (`view::fit`; until textures land, a generated checkerboard stands in for the image); screen rotation survives navigation away and back, per path, until the app closes.
 
 - Zoom from right-drag or the wheel anchors at the cursor; from keys, at the window centre. Zoom range 1/8× fit to 32× native pixels.
 - Pan clamps so the image cannot leave the window: an image smaller than the window on an axis stays centred on that axis.

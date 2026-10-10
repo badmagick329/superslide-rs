@@ -18,6 +18,8 @@ fast_image_resize = "6.1.0"
 # JPEG goes through zune-jpeg directly; the default feature set would also build AVIF, WebP and more.
 image = { version = "0.25.10", default-features = false, features = ["png", "tga", "bmp"] }
 kamadak-exif = "0.6.1"
+# wgpu setup is async; on native its futures resolve at once, so blocking on them is free.
+pollster = "0.4.0"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
