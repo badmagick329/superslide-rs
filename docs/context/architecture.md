@@ -1,6 +1,6 @@
 # Architecture
 
-The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* and *Clipboard* describe SSR-15 and SSR-16 as built and verified. *Files and persistence* and *Help overlay* are still the target for phase 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
+The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* and *Clipboard* describe SSR-15 and SSR-16 as built and verified. *Help overlay* describes its binding table (SSR-21) as built and the overlay itself (SSR-22) as the target, *Files and persistence* is still the target for phase 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
 
 ## Shape
 
@@ -10,7 +10,7 @@ The code is vertical slices, one folder per feature, each split into the layers 
 
 | Slice | Layers | Owns |
 | --- | --- | --- |
-| [`shell`](../../src/shell/mod.rs) | | The outer layer: [`app`](../../src/shell/app.rs) (the winit `ApplicationHandler`: owns all state, runs commands), [`command`](../../src/shell/command.rs) (`Command`, everything the owner can ask for), [`keymap`](../../src/shell/keymap.rs) (the only place bindings are decided) and [`render`](../../src/shell/render.rs) (wgpu, textures, mips, the quad pipeline, egui painting). |
+| [`shell`](../../src/shell/mod.rs) | | The outer layer: [`app`](../../src/shell/app.rs) (the winit `ApplicationHandler`: owns all state, runs commands), [`command`](../../src/shell/command.rs) (`Command`, everything the owner can ask for), [`keymap`](../../src/shell/keymap.rs) (the only place bindings are decided, and `BINDINGS`, the table describing them) and [`render`](../../src/shell/render.rs) (wgpu, textures, mips, the quad pipeline, egui painting). |
 | [`image_file`](../../src/image_file/mod.rs) | domain | The shared kernel: `Format` (the one list of extensions, and their signatures) and EXIF `Orientation`. |
 | [`browse`](../../src/browse/mod.rs) | domain, infrastructure, presentation | The image list, its order and group jumps in `domain`, with the advance limit in [`domain::advance`](../../src/browse/domain/advance.rs) and the slideshow timer in [`domain::slideshow`](../../src/browse/domain/slideshow.rs); scanning paths into it, on its own thread, with the folder filter, in `infrastructure`; the wording of the order notice in `presentation`. |
 | [`load`](../../src/load/mod.rs) | domain, infrastructure, presentation | `Decoded`, `DecodeError` and the trust rules (content matches name, size cap, fit to GPU) in `domain`, with the preload cache's policy in [`domain::preload`](../../src/load/domain/preload.rs); the decoders and the decode workers ([`infrastructure::workers`](../../src/load/infrastructure/workers.rs)) in `infrastructure`; the error card in `presentation`. |
@@ -19,6 +19,7 @@ The code is vertical slices, one folder per feature, each split into the layers 
 | [`prefs`](../../src/prefs/mod.rs) | domain | `Preferences` and their defaults. It holds other slices' domain types, such as the magnification filter. |
 | [`file_actions`](../../src/file_actions/mod.rs) | domain, infrastructure, presentation | Delete, move and copy: `Action` and `Failure` in `domain`; the file action thread and the no-overwrite filesystem calls in `infrastructure`; the notice wording in `presentation`. |
 | [`clipboard`](../../src/clipboard/mod.rs) | domain, infrastructure, presentation | Ctrl+C and Ctrl+V: the outcomes and the pasted-image check in `domain`; the clipboard thread and `arboard` calls in `infrastructure`, with `load`'s decoders handed in by `shell`; the notice wording in `presentation`. |
+| [`help`](../../src/help/mod.rs) | domain | The help overlay: `Binding` and `Section`, the row type `shell::keymap::BINDINGS` hands in. The overlay itself arrives with SSR-22. |
 | [`info_overlay`](../../src/info_overlay/mod.rs) | domain | Scaffold for SSR-17. |
 
 A layer that grows past one concern becomes a file with submodules beside it (`load/domain.rs` and `load/domain/preload.rs`), so paths still name the layer.
@@ -174,13 +175,15 @@ Delete, M and C act on the image on screen, error cards included, even while the
 
 ## Help overlay
 
-Target design for SSR-21 and SSR-22.
+The table is built (SSR-21); the overlay is the target for SSR-22.
 
-- **One table.** `shell::keymap::BINDINGS` lists every binding: its keys as shown, what it does, a section (Navigate, View, Order, Files, Clipboard, Window), and probe inputs with the `Command` each must give. Matching stays the `match` in `for_key`, and tests hold the two together:
-  - every probe gives its command;
-  - an exhaustive `match` over `Command` makes a new command need a row;
-  - [keymap.md](keymap.md)'s table must equal `BINDINGS` row for row.
-- **The overlay.** `?` toggles an egui panel listing `BINDINGS` by section, with a filter box that `/` focuses. Filtering (case-insensitive substring over keys and description) is `help::domain`; drawing is `help::presentation`. The row type lives in `help::domain` so `shell` hands rows inward.
+- **One table.** `BINDINGS` in [keymap.rs](../../src/shell/keymap.rs) lists every binding as a `Row`: a `help::domain::Binding` (its keys as shown, what it does, its `Section`) and probes, sample inputs with the `Command` each must give. Matching stays the `match` in `for_key` and `Mouse`, because payloads, repeat rules and modifier guards read best as code; the keymap tests hold the two together:
+  - every probe, replayed through `for_key`, `for_wheel` or `Mouse`, gives its command, and that command belongs to the probe's row;
+  - the row a command belongs to is an exhaustive `match` over `Command`, so a new command does not compile until it names its row;
+  - [keymap.md](keymap.md)'s table equals `BINDINGS` row for row, read with `include_str!`; the debug-only F9 row comes last, after the doc's rows;
+  - each section is one run of rows, so the overlay's headings follow table order;
+  - only I and P, not built yet, have no probes; SSR-17 and SSR-18 add theirs.
+- **The overlay.** `?` toggles an egui panel listing `BINDINGS` by section, leaving out rows with no probes, as their keys do nothing yet, with a filter box that `/` focuses. Filtering (case-insensitive substring over keys and description) is `help::domain`; drawing is `help::presentation`. The row type lives in `help::domain` so `shell` hands rows inward.
 - **It is modal.** While it is open, `shell::app` routes all input to it before the keymap. Arrows, PgUp/PgDn, Home/End and the wheel scroll the list. Esc clears the filter, then closes the overlay. Clicks on the image do nothing. The slideshow and notices carry on. The preferences screen (SSR-18) uses the same routing.
 
 ## Preference defaults

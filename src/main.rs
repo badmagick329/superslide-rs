@@ -5,6 +5,7 @@
 mod browse;
 mod clipboard;
 mod file_actions;
+mod help;
 mod image_file;
 mod info_overlay;
 mod load;

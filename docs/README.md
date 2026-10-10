@@ -17,7 +17,7 @@ SuperSlide-RS is a Rust rebuild of Ryan Geiss's SuperSlide (2008–2009), a smal
 | --- | --- |
 | [context/glossary.md](context/glossary.md) | The ubiquitous language. Update when a concept is added, renamed or retired. |
 | [context/architecture.md](context/architecture.md) | Slices and layers, threads, preload cache, rendering, view transform, persistence, preference defaults and Cargo profiles. Rewrite a section when the code it describes changes. |
-| [context/keymap.md](context/keymap.md) | Every key and mouse binding; the `keymap` module implements it. Update with any binding change. |
+| [context/keymap.md](context/keymap.md) | Every key and mouse binding; the `keymap` module implements it, and a test checks its table against `keymap::BINDINGS`. Update with any binding change. |
 | [context/releasing.md](context/releasing.md) | Cutting a release: tag, workflow, how commit messages become release notes. Update when the release workflow or `cliff.toml` changes. |
 | [decisions/2026-10-10-v1-scope.md](decisions/2026-10-10-v1-scope.md) | What v1 keeps and cuts from the original, and why. Supersede with a new ADR when scope changes. |
 | [decisions/2026-10-10-rendering-stack.md](decisions/2026-10-10-rendering-stack.md) | Window, GPU, decoding and UI crates, and why the GPU stays without transitions. Supersede when a core crate is replaced. |

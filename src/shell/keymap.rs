@@ -1,11 +1,13 @@
-//! Maps keys and mouse gestures to [`Command`]. The only place bindings are decided; the table is
-//! `docs/context/keymap.md`.
+//! Maps keys and mouse gestures to [`Command`]. The only place bindings are decided: `for_key`,
+//! `for_wheel` and `Mouse` decide them, and [`BINDINGS`] describes them for the help overlay. Tests
+//! hold those two and `docs/context/keymap.md` together, so none can change alone.
 
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::browse::domain::{Direction, SortKey};
 use crate::file_actions::domain::Transfer;
+use crate::help::domain::{Binding, Section};
 use crate::shell::command::Command;
 use crate::view::domain::{Anchor, PanBy, Turn};
 
@@ -106,11 +108,11 @@ pub fn released(key: &Key) -> Option<Direction> {
     }
 }
 
-fn advance(direction: Direction, repeat: bool) -> Command {
+const fn advance(direction: Direction, repeat: bool) -> Command {
     Command::Advance { direction, repeat }
 }
 
-fn zoom(factor: f32) -> Command {
+const fn zoom(factor: f32) -> Command {
     Command::Zoom {
         factor,
         anchor: Anchor::Centre,
@@ -197,9 +199,418 @@ impl Mouse {
     }
 }
 
+/// One row of the keymap: the binding as the help overlay shows it, and sample inputs with the
+/// command each must give.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "scaffold: the help overlay (SSR-22) reads it")
+)]
+pub struct Row {
+    pub binding: Binding,
+    /// Run through `for_key`, `for_wheel` and `Mouse` by the tests. Empty only for a row whose
+    /// command is not built yet.
+    probes: &'static [Probe],
+}
+
+/// An input a test can replay, with the command it must give.
+#[cfg_attr(not(test), expect(dead_code, reason = "only tests replay probes"))]
+struct Probe(Input, Command);
+
+#[cfg_attr(not(test), expect(dead_code, reason = "only tests replay probes"))]
+enum Input {
+    Named(NamedKey, ModifiersState),
+    Char(&'static str, ModifiersState),
+    /// Press and release at `PROBE_AT` without moving.
+    Click(MouseButton),
+    /// Press at `PROBE_AT`, then move by the offset.
+    Drag(MouseButton, [f32; 2]),
+    /// Wheel notches with the cursor at `PROBE_AT`.
+    Wheel(f32),
+}
+
+/// Where mouse probes happen, so the commands they expect can name their anchor.
+const PROBE_AT: [f32; 2] = [100.0, 100.0];
+const NONE: ModifiersState = ModifiersState::empty();
+const CTRL: ModifiersState = ModifiersState::CONTROL;
+
+const fn named(key: NamedKey, modifiers: ModifiersState, command: Command) -> Probe {
+    Probe(Input::Named(key, modifiers), command)
+}
+
+const fn char(c: &'static str, modifiers: ModifiersState, command: Command) -> Probe {
+    Probe(Input::Char(c, modifiers), command)
+}
+
+const fn row(
+    keys: &'static str,
+    action: &'static str,
+    section: Section,
+    probes: &'static [Probe],
+) -> Row {
+    Row {
+        binding: Binding {
+            keys,
+            action,
+            section,
+        },
+        probes,
+    }
+}
+
+const fn pan_by(dx: f32, dy: f32) -> Command {
+    Command::Pan(PanBy::WindowFraction { dx, dy })
+}
+
+const fn zoom_at_probe(factor: f32) -> Command {
+    Command::Zoom {
+        factor,
+        anchor: Anchor::Cursor {
+            x: PROBE_AT[0],
+            y: PROBE_AT[1],
+        },
+    }
+}
+
+/// Every binding, in the order of `docs/context/keymap.md`'s table, each section in one run.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "scaffold: the help overlay (SSR-22) reads it")
+)]
+pub const BINDINGS: &[Row] = &[
+    row(
+        "Space, right click",
+        "Next image",
+        Section::Navigate,
+        &[
+            named(NamedKey::Space, NONE, advance(Direction::Forward, false)),
+            Probe(
+                Input::Click(MouseButton::Right),
+                advance(Direction::Forward, false),
+            ),
+        ],
+    ),
+    row(
+        "Backspace, left click",
+        "Previous image",
+        Section::Navigate,
+        &[
+            named(
+                NamedKey::Backspace,
+                NONE,
+                advance(Direction::Backward, false),
+            ),
+            Probe(
+                Input::Click(MouseButton::Left),
+                advance(Direction::Backward, false),
+            ),
+        ],
+    ),
+    row(
+        "Ctrl+Right / Ctrl+Left",
+        "First image of the next / previous group (group by subfolder only)",
+        Section::Navigate,
+        &[
+            named(
+                NamedKey::ArrowRight,
+                CTRL,
+                Command::JumpGroup(Direction::Forward),
+            ),
+            named(
+                NamedKey::ArrowLeft,
+                CTRL,
+                Command::JumpGroup(Direction::Backward),
+            ),
+        ],
+    ),
+    row(
+        "A",
+        "Start or stop the slideshow",
+        Section::Navigate,
+        &[char("a", NONE, Command::ToggleSlideshow)],
+    ),
+    row(
+        "Left drag, arrow keys",
+        "Pan",
+        Section::View,
+        &[
+            Probe(
+                Input::Drag(MouseButton::Left, [10.0, 0.0]),
+                Command::Pan(PanBy::Pixels { dx: 10.0, dy: 0.0 }),
+            ),
+            named(NamedKey::ArrowLeft, NONE, pan_by(ARROW_PAN, 0.0)),
+            named(NamedKey::ArrowRight, NONE, pan_by(-ARROW_PAN, 0.0)),
+            named(NamedKey::ArrowUp, NONE, pan_by(0.0, ARROW_PAN)),
+            named(NamedKey::ArrowDown, NONE, pan_by(0.0, -ARROW_PAN)),
+        ],
+    ),
+    row(
+        "Right drag, mouse wheel, + / -",
+        "Zoom (+ / - and each wheel notch: 1.25×; = also zooms in)",
+        Section::View,
+        &[
+            Probe(
+                Input::Drag(MouseButton::Right, [0.0, -DRAG_PX_PER_DOUBLING]),
+                zoom_at_probe(2.0),
+            ),
+            Probe(Input::Wheel(1.0), zoom_at_probe(ZOOM_STEP)),
+            char("+", NONE, zoom(ZOOM_STEP)),
+            char("=", NONE, zoom(ZOOM_STEP)),
+            char("-", NONE, zoom(1.0 / ZOOM_STEP)),
+        ],
+    ),
+    row(
+        "Ctrl+ / Ctrl-",
+        "Zoom by double / half",
+        Section::View,
+        &[
+            char("+", CTRL, zoom(2.0)),
+            char("=", CTRL, zoom(2.0)),
+            char("-", CTRL, zoom(0.5)),
+        ],
+    ),
+    row(
+        "0",
+        "Back to fit",
+        Section::View,
+        &[char("0", NONE, Command::Fit)],
+    ),
+    row(
+        "R / L",
+        "Screen rotation right / left",
+        Section::View,
+        &[
+            char("r", NONE, Command::Rotate(Turn::Right)),
+            char("l", NONE, Command::Rotate(Turn::Left)),
+        ],
+    ),
+    row(
+        "Ctrl+F",
+        "Toggle the magnification filter between linear and nearest",
+        Section::View,
+        &[char("f", CTRL, Command::ToggleMagnificationFilter)],
+    ),
+    row("I", "Cycle the info overlay", Section::View, &[]),
+    row(
+        "N, D, Z",
+        "Sort by name, date, size",
+        Section::Order,
+        &[
+            char("n", NONE, Command::Sort(SortKey::Name)),
+            char("d", NONE, Command::Sort(SortKey::Date)),
+            char("z", NONE, Command::Sort(SortKey::Size)),
+        ],
+    ),
+    row(
+        "S",
+        "Shuffle (again, if already shuffled)",
+        Section::Order,
+        &[char("s", NONE, Command::Shuffle)],
+    ),
+    row(
+        "V",
+        "Reverse the sort",
+        Section::Order,
+        &[char("v", NONE, Command::ReverseSort)],
+    ),
+    row(
+        "G",
+        "Toggle group by subfolder",
+        Section::Order,
+        &[char("g", NONE, Command::ToggleGrouping)],
+    ),
+    row(
+        "O / Shift+O",
+        "Open a file / recursive open of a folder",
+        Section::Files,
+        &[
+            char("o", NONE, Command::Open { recursive: false }),
+            char(
+                "O",
+                ModifiersState::SHIFT,
+                Command::Open { recursive: true },
+            ),
+        ],
+    ),
+    row(
+        "Delete",
+        "Delete the current image to the Recycle Bin",
+        Section::Files,
+        &[named(NamedKey::Delete, NONE, Command::DeleteToRecycleBin)],
+    ),
+    row(
+        "M / C",
+        "Move / copy the current image to a folder (picker opens at the last target folder)",
+        Section::Files,
+        &[
+            char("m", NONE, Command::Transfer(Transfer::Move)),
+            char("c", NONE, Command::Transfer(Transfer::Copy)),
+        ],
+    ),
+    row(
+        "Ctrl+C / Ctrl+V",
+        "Copy the current image to the clipboard / show the clipboard image",
+        Section::Clipboard,
+        &[
+            char("c", CTRL, Command::CopyToClipboard),
+            char("v", CTRL, Command::PasteFromClipboard),
+        ],
+    ),
+    row(
+        "F11, Enter",
+        "Toggle fullscreen",
+        Section::Window,
+        &[
+            named(NamedKey::F11, NONE, Command::ToggleFullscreen),
+            named(NamedKey::Enter, NONE, Command::ToggleFullscreen),
+        ],
+    ),
+    row(
+        "Esc",
+        "Leave fullscreen; in a window, quit",
+        Section::Window,
+        &[named(
+            NamedKey::Escape,
+            NONE,
+            Command::LeaveFullscreenOrQuit,
+        )],
+    ),
+    row("P", "Open or close preferences", Section::Window, &[]),
+    // Last, so the rows above stay the doc's table in every build.
+    #[cfg(debug_assertions)]
+    row(
+        "F9",
+        "Show a test notice",
+        Section::Window,
+        &[named(NamedKey::F9, NONE, Command::TestNotice)],
+    ),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn replay(input: &Input) -> Option<Command> {
+        let mut mouse = Mouse::default();
+        match *input {
+            Input::Named(key, modifiers) => for_key(&Key::Named(key), modifiers, false),
+            Input::Char(c, modifiers) => for_key(&Key::Character(c.into()), modifiers, false),
+            Input::Click(button) => {
+                mouse.pressed(button, PROBE_AT);
+                mouse.released(button)
+            }
+            Input::Drag(button, [dx, dy]) => {
+                mouse.pressed(button, PROBE_AT);
+                mouse.moved([PROBE_AT[0] + dx, PROBE_AT[1] + dy])
+            }
+            Input::Wheel(notches) => for_wheel(MouseScrollDelta::LineDelta(0.0, notches), PROBE_AT),
+        }
+    }
+
+    /// The row each command belongs to. Exhaustive on purpose: a new command does not compile
+    /// until it names its row, and the probe test then needs a probe there that gives it.
+    fn row_of(command: Command) -> &'static str {
+        match command {
+            Command::Advance {
+                direction: Direction::Forward,
+                ..
+            } => "Space, right click",
+            Command::Advance {
+                direction: Direction::Backward,
+                ..
+            } => "Backspace, left click",
+            Command::JumpGroup(_) => "Ctrl+Right / Ctrl+Left",
+            Command::ToggleSlideshow => "A",
+            Command::Pan(_) => "Left drag, arrow keys",
+            Command::Zoom {
+                factor,
+                anchor: Anchor::Centre,
+            } if factor == 2.0 || factor == 0.5 => "Ctrl+ / Ctrl-",
+            Command::Zoom { .. } => "Right drag, mouse wheel, + / -",
+            Command::Fit => "0",
+            Command::Rotate(_) => "R / L",
+            Command::ToggleMagnificationFilter => "Ctrl+F",
+            Command::CycleInfoOverlay => "I",
+            Command::ToggleFullscreen => "F11, Enter",
+            Command::LeaveFullscreenOrQuit => "Esc",
+            Command::Sort(_) => "N, D, Z",
+            Command::Shuffle => "S",
+            Command::ReverseSort => "V",
+            Command::ToggleGrouping => "G",
+            Command::Open { .. } => "O / Shift+O",
+            Command::DeleteToRecycleBin => "Delete",
+            Command::Transfer(_) => "M / C",
+            Command::CopyToClipboard | Command::PasteFromClipboard => "Ctrl+C / Ctrl+V",
+            Command::TogglePreferences => "P",
+            #[cfg(debug_assertions)]
+            Command::TestNotice => "F9",
+        }
+    }
+
+    #[test]
+    fn every_probe_gives_its_command_on_its_row() {
+        for row in BINDINGS {
+            let keys = row.binding.keys;
+            for Probe(input, command) in row.probes {
+                assert_eq!(replay(input), Some(*command), "probe on row {keys}");
+                assert_eq!(
+                    row_of(*command),
+                    keys,
+                    "{command:?} probed on the wrong row"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_unbuilt_commands_lack_probes() {
+        let unprobed: Vec<_> = BINDINGS
+            .iter()
+            .filter(|row| row.probes.is_empty())
+            .map(|row| row.binding.keys)
+            .collect();
+        // The info overlay (SSR-17) and preferences (SSR-18); each issue adds its probe.
+        assert_eq!(unprobed, ["I", "P"]);
+    }
+
+    #[test]
+    fn the_keymap_doc_lists_the_same_rows() {
+        let doc = include_str!("../../docs/context/keymap.md");
+        let table: Vec<(&str, &str)> = doc
+            .lines()
+            .skip_while(|line| *line != "| Input | Command |")
+            .skip(2)
+            .take_while(|line| line.starts_with('|'))
+            .map(|line| {
+                let (keys, action) = line
+                    .trim_matches('|')
+                    .split_once(" | ")
+                    .expect("a two-column row");
+                (keys.trim(), action.trim())
+            })
+            .collect();
+        assert!(!table.is_empty(), "keymap.md has no binding table");
+        let rows: Vec<_> = BINDINGS
+            .iter()
+            .map(|row| (row.binding.keys, row.binding.action))
+            .collect();
+        assert_eq!(table, rows[..table.len()]);
+        // The doc mentions F9 in prose, as release builds lack it.
+        let extra: Vec<_> = rows[table.len()..].iter().map(|row| row.0).collect();
+        let expected: &[&str] = if cfg!(debug_assertions) { &["F9"] } else { &[] };
+        assert_eq!(extra, expected);
+    }
+
+    #[test]
+    fn each_section_is_one_run() {
+        let mut seen = Vec::new();
+        for row in BINDINGS {
+            let section = row.binding.section;
+            if seen.last() != Some(&section) {
+                assert!(!seen.contains(&section), "{section:?} is split");
+                seen.push(section);
+            }
+        }
+    }
 
     #[test]
     fn a_click_with_jitter_does_not_pan() {
