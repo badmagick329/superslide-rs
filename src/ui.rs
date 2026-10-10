@@ -22,6 +22,13 @@ pub enum InfoOverlay {
 const NOTICE_SHOWN: Duration = Duration::from_secs(3);
 const NOTICE_FADE: Duration = Duration::from_millis(500);
 /// More than this and the oldest goes; a burst of errors must not cover the image.
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        dead_code,
+        reason = "scaffold: only the debug F9 key adds notices so far"
+    )
+)]
 const MAX_NOTICES: usize = 3;
 /// Gap from the window corner and between notices, in points.
 const NOTICE_SPACING: f32 = 12.0;
@@ -43,6 +50,10 @@ struct Notice {
 impl Notices {
     /// Repeating a text already shown restarts its timer and moves it to the bottom, so holding a
     /// key that fails does not stack copies.
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(dead_code, reason = "scaffold: only the debug F9 key calls it so far")
+    )]
     pub fn notify(&mut self, text: impl Into<String>, now: Instant) {
         let text = text.into();
         self.shown.retain(|notice| notice.text != text);
