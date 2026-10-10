@@ -18,6 +18,8 @@ pub fn show(notices: &mut Notices, ctx: &egui::Context, now: Instant) {
     }
     egui::Area::new(egui::Id::new("notices"))
         .anchor(Align2::RIGHT_TOP, [-NOTICE_SPACING, NOTICE_SPACING])
+        // Over the help overlay, which can reach the corner in a small window.
+        .order(egui::Order::Foreground)
         // Never takes clicks or focus: input under a notice still reaches the viewer.
         .interactable(false)
         .fade_in(false)

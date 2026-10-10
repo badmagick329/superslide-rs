@@ -26,5 +26,9 @@ The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this 
 | F11, Enter | Toggle fullscreen |
 | Esc | Leave fullscreen; in a window, quit |
 | P | Open or close preferences |
+| ? | Show or hide this list of keys |
+| / | Filter this list of keys |
 
 Holding Space or Backspace repeats under the advance limit; holding an arrow, + or - repeats at the keyboard's rate; every other key acts once per press, so a held Delete deletes one image. Letter bindings and arrow pan ignore the key while Ctrl or Alt is held, leaving those chords to their own rows. Fullscreen is borderless on the window's current monitor, with no display mode change. Bindings the original had and v1 drops: H (no transitions to skip), t/T (contrast), Alt (no menu). Debug builds add F9, which shows a test notice.
+
+While the list of keys (?) shows, it takes every key: arrows, PgUp / PgDn, Home / End and the wheel scroll it, Esc and ? close it, / focuses its filter, and every other binding does nothing until it closes. In the filter, keys type; Esc clears the filter and leaves it, Enter leaves it.

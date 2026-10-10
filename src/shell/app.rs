@@ -22,6 +22,8 @@ use crate::clipboard::presentation as clipboard;
 use crate::file_actions::domain::{Action, Failure, Transfer};
 use crate::file_actions::infrastructure::FileActions;
 use crate::file_actions::presentation as file_actions;
+use crate::help::domain::{Binding, Help};
+use crate::help::presentation as help;
 use crate::image_file::domain::{Format, Orientation};
 use crate::load::domain::preload::{PreloadCache, preload_window};
 use crate::load::domain::{DecodeError, Decoded};
@@ -32,7 +34,7 @@ use crate::notices::domain::Notices;
 use crate::notices::presentation::{self as notices, thousands};
 use crate::prefs::domain::Preferences;
 use crate::shell::command::Command;
-use crate::shell::keymap;
+use crate::shell::keymap::{self, HelpKey};
 use crate::shell::render::{self, ImageTexture, Renderer, UiFrame};
 use crate::view::domain::View;
 
@@ -152,6 +154,8 @@ struct Shown {
     /// navigation goes back to the image list's current image rather than stepping past it.
     pasted: bool,
     waiting: Option<Waiting>,
+    /// The help overlay, while it is open. It takes all input before the keymap.
+    help: Option<Help>,
     egui: egui::Context,
     egui_input: egui_winit::State,
     notices: Notices,
@@ -325,6 +329,7 @@ impl ApplicationHandler<AppEvent> for App {
             clipboard,
             pasted: false,
             waiting: None,
+            help: None,
             egui,
             egui_input,
             notices: Notices::default(),
@@ -369,9 +374,16 @@ impl ApplicationHandler<AppEvent> for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         let Some(shown) = &mut self.shown else { return };
         // egui sees every event, so its pointer and modifier state stay current, but takes one only
-        // while a widget has focus; otherwise all input belongs to the keymap.
+        // while a widget has focus; otherwise all input belongs to the help overlay, when open,
+        // then the keymap.
         let response = shown.egui_input.on_window_event(&shown.window, &event);
-        if response.consumed && shown.egui.memory(|memory| memory.focused().is_some()) {
+        let egui_keeps =
+            response.consumed && shown.egui.memory(|memory| memory.focused().is_some());
+        if shown.help.is_some() && shown.help_input(&event, egui_keeps) {
+            shown.window.request_redraw();
+            return;
+        }
+        if egui_keeps {
             if response.repaint {
                 shown.window.request_redraw();
             }
@@ -486,6 +498,40 @@ impl ApplicationHandler<AppEvent> for App {
 }
 
 impl Shown {
+    /// Input while the help overlay is open. Every press, click and wheel turn stops here, so
+    /// none reaches a binding underneath; true when the event was taken. Key releases pass on, so
+    /// a Space held before the overlay opened still stops repeating.
+    fn help_input(&mut self, event: &WindowEvent, egui_keeps: bool) -> bool {
+        let Some(open) = &mut self.help else {
+            return false;
+        };
+        match event {
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                // The filter box has the key; egui types it.
+                if egui_keeps {
+                    return false;
+                }
+                match keymap::for_help_key(&event.logical_key, self.modifiers, event.repeat) {
+                    Some(HelpKey::Close) => self.help = None,
+                    Some(HelpKey::FocusFilter) => open.focus_filter = true,
+                    Some(HelpKey::Scroll(by)) => open.scroll(by),
+                    None => {}
+                }
+                true
+            }
+            // Clicks on the panel reach egui, which has already seen them; on the image they
+            // do nothing.
+            WindowEvent::MouseInput { .. } => true,
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let Some(by) = keymap::for_help_wheel(*delta) {
+                    open.scroll(by);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn view(&mut self) -> Option<&mut View> {
         match &mut self.showing {
             Showing::Image { view, .. } => Some(view),
@@ -866,12 +912,21 @@ impl Shown {
         let input = self.egui_input.take_egui_input(&self.window);
         let showing = &self.showing;
         let shown_notices = &mut self.notices;
+        let open_help = &mut self.help;
         let output = self.egui.run_ui(input, |ui| {
             if let Showing::Error {
                 file_name, reason, ..
             } = showing
             {
                 error_card(ui.ctx(), file_name, reason);
+            }
+            if let Some(open) = open_help {
+                let rows: Vec<Binding> = keymap::BINDINGS
+                    .iter()
+                    .filter(|row| row.works())
+                    .map(|row| row.binding)
+                    .collect();
+                help::show(ui.ctx(), open, &rows);
             }
             notices::show(shown_notices, ui.ctx(), now);
         });
@@ -920,6 +975,11 @@ impl Shown {
             Command::DeleteToRecycleBin => return self.act(None),
             Command::Transfer(transfer) => return self.act(Some(transfer)),
             Command::CopyToClipboard => return self.copy(),
+            Command::ToggleHelp => {
+                self.help = Some(Help::new());
+                // A button held as it opened must not click or drag once it closes.
+                self.mouse = keymap::Mouse::default();
+            }
             Command::PasteFromClipboard => return self.clipboard.request(Request::Paste),
             // Without an image list there is nothing to show; opening one would stop it anyway.
             Command::ToggleSlideshow if self.images.is_some() => {

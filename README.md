@@ -28,6 +28,7 @@ Open images by dragging a file or folder onto the window, or press **O**.
 | Delete | Send the image to the Recycle Bin |
 | M / C | Move / copy the image to a folder |
 | Ctrl+C / Ctrl+V | Copy the image / show the image on the clipboard |
+| ? | List every key; / filters the list |
 
 Move and copy never overwrite a file: if the folder already has one with that name, nothing happens and you get a notice.
 

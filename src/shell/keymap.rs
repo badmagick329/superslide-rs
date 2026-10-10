@@ -7,7 +7,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::browse::domain::{Direction, SortKey};
 use crate::file_actions::domain::Transfer;
-use crate::help::domain::{Binding, Section};
+use crate::help::domain::{Binding, Scroll, Section};
 use crate::shell::command::Command;
 use crate::view::domain::{Anchor, PanBy, Turn};
 
@@ -80,6 +80,8 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
                 "v" | "V" => (Command::ReverseSort, false),
                 "g" | "G" => (Command::ToggleGrouping, false),
                 "a" | "A" => (Command::ToggleSlideshow, false),
+                "?" => (Command::ToggleHelp, false),
+                "/" => (Command::FocusHelpFilter, false),
                 "m" | "M" => (Command::Transfer(Transfer::Move), false),
                 "c" | "C" => (Command::Transfer(Transfer::Copy), false),
                 // The Shift key, not the character, so Caps Lock does not turn O recursive.
@@ -96,6 +98,47 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
     };
     // Held toggles would flicker between states, and a held Esc would leave fullscreen then quit.
     (repeats || !repeat).then_some(command)
+}
+
+/// What a key press does while the help overlay is open and its filter box is not focused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HelpKey {
+    Close,
+    FocusFilter,
+    Scroll(Scroll),
+}
+
+/// While the help overlay is open it takes every key: the ones below act on it, and every other
+/// key does nothing, so a key pressed at the list never runs its binding underneath.
+pub fn for_help_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<HelpKey> {
+    let scroll = match key {
+        Key::Named(NamedKey::ArrowUp) => Scroll::Lines(-1.0),
+        Key::Named(NamedKey::ArrowDown) => Scroll::Lines(1.0),
+        Key::Named(NamedKey::PageUp) => Scroll::Pages(-1.0),
+        Key::Named(NamedKey::PageDown) => Scroll::Pages(1.0),
+        Key::Named(NamedKey::Home) => Scroll::Top,
+        Key::Named(NamedKey::End) => Scroll::Bottom,
+        // Esc closes rather than leaving fullscreen or quitting; ? and / keep their bindings.
+        Key::Named(NamedKey::Escape) => return (!repeat).then_some(HelpKey::Close),
+        _ => {
+            return match for_key(key, modifiers, repeat)? {
+                Command::ToggleHelp => Some(HelpKey::Close),
+                Command::FocusHelpFilter => Some(HelpKey::FocusFilter),
+                _ => None,
+            };
+        }
+    };
+    Some(HelpKey::Scroll(scroll))
+}
+
+/// Lines the help overlay scrolls per wheel notch.
+const HELP_LINES_PER_NOTCH: f32 = 3.0;
+
+/// The wheel scrolls the help overlay, wherever the cursor is, instead of zooming.
+pub fn for_help_wheel(delta: MouseScrollDelta) -> Option<Scroll> {
+    let notches = notches(delta);
+    // Wheel up gives positive notches and scrolls towards the top.
+    (notches != 0.0).then(|| Scroll::Lines(-notches * HELP_LINES_PER_NOTCH))
 }
 
 /// Space or Backspace let go, whatever the modifiers: a repeat waiting under the advance limit
@@ -121,10 +164,7 @@ const fn zoom(factor: f32) -> Command {
 
 /// Wheel up zooms in, about the cursor.
 pub fn for_wheel(delta: MouseScrollDelta, cursor: [f32; 2]) -> Option<Command> {
-    let notches = match delta {
-        MouseScrollDelta::LineDelta(_, y) => y,
-        MouseScrollDelta::PixelDelta(p) => p.y as f32 / PIXELS_PER_NOTCH,
-    };
+    let notches = notches(delta);
     (notches != 0.0).then(|| Command::Zoom {
         factor: ZOOM_STEP.powf(notches),
         anchor: Anchor::Cursor {
@@ -132,6 +172,13 @@ pub fn for_wheel(delta: MouseScrollDelta, cursor: [f32; 2]) -> Option<Command> {
             y: cursor[1],
         },
     })
+}
+
+fn notches(delta: MouseScrollDelta) -> f32 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, y) => y,
+        MouseScrollDelta::PixelDelta(p) => p.y as f32 / PIXELS_PER_NOTCH,
+    }
 }
 
 /// Tells clicks from drags. A press becomes a drag once the cursor strays more than
@@ -201,15 +248,18 @@ impl Mouse {
 
 /// One row of the keymap: the binding as the help overlay shows it, and sample inputs with the
 /// command each must give.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "scaffold: the help overlay (SSR-22) reads it")
-)]
 pub struct Row {
     pub binding: Binding,
     /// Run through `for_key`, `for_wheel` and `Mouse` by the tests. Empty only for a row whose
     /// command is not built yet.
     probes: &'static [Probe],
+}
+
+impl Row {
+    /// Whether its keys do anything yet. The help overlay lists only rows that do.
+    pub fn works(&self) -> bool {
+        !self.probes.is_empty()
+    }
 }
 
 /// An input a test can replay, with the command it must give.
@@ -272,10 +322,6 @@ const fn zoom_at_probe(factor: f32) -> Command {
 }
 
 /// Every binding, in the order of `docs/context/keymap.md`'s table, each section in one run.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "scaffold: the help overlay (SSR-22) reads it")
-)]
 pub const BINDINGS: &[Row] = &[
     row(
         "Space, right click",
@@ -475,6 +521,18 @@ pub const BINDINGS: &[Row] = &[
         )],
     ),
     row("P", "Open or close preferences", Section::Window, &[]),
+    row(
+        "?",
+        "Show or hide this list of keys",
+        Section::Window,
+        &[char("?", ModifiersState::SHIFT, Command::ToggleHelp)],
+    ),
+    row(
+        "/",
+        "Filter this list of keys",
+        Section::Window,
+        &[char("/", NONE, Command::FocusHelpFilter)],
+    ),
     // Last, so the rows above stay the doc's table in every build.
     #[cfg(debug_assertions)]
     row(
@@ -541,6 +599,8 @@ mod tests {
             Command::Transfer(_) => "M / C",
             Command::CopyToClipboard | Command::PasteFromClipboard => "Ctrl+C / Ctrl+V",
             Command::TogglePreferences => "P",
+            Command::ToggleHelp => "?",
+            Command::FocusHelpFilter => "/",
             #[cfg(debug_assertions)]
             Command::TestNotice => "F9",
         }
@@ -559,6 +619,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_help_overlay_takes_every_key() {
+        let none = ModifiersState::empty();
+        let named = |key| for_help_key(&Key::Named(key), none, false);
+        let char = |c: &str| for_help_key(&Key::Character(c.into()), none, false);
+        assert_eq!(named(NamedKey::Escape), Some(HelpKey::Close));
+        assert_eq!(char("?"), Some(HelpKey::Close));
+        assert_eq!(char("/"), Some(HelpKey::FocusFilter));
+        assert_eq!(named(NamedKey::End), Some(HelpKey::Scroll(Scroll::Bottom)));
+        assert_eq!(
+            for_help_key(&Key::Named(NamedKey::ArrowDown), none, true),
+            Some(HelpKey::Scroll(Scroll::Lines(1.0))),
+            "held arrows keep scrolling"
+        );
+        // Bindings underneath do nothing: no rotate, delete, advance or fullscreen.
+        for key in [
+            NamedKey::Delete,
+            NamedKey::Space,
+            NamedKey::F11,
+            NamedKey::Enter,
+        ] {
+            assert_eq!(named(key), None, "{key:?}");
+        }
+        assert_eq!(char("r"), None);
+        // A held Esc closes once; the repeat must not reach anything else.
+        assert_eq!(
+            for_help_key(&Key::Named(NamedKey::Escape), none, true),
+            None
+        );
+        assert_eq!(
+            for_help_wheel(MouseScrollDelta::LineDelta(0.0, -1.0)),
+            Some(Scroll::Lines(3.0)),
+            "wheel down scrolls down"
+        );
     }
 
     #[test]

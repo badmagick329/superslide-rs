@@ -1,6 +1,6 @@
 # Architecture
 
-The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* and *Clipboard* describe SSR-15 and SSR-16 as built and verified. *Help overlay* describes its binding table (SSR-21) as built and the overlay itself (SSR-22) as the target, *Files and persistence* is still the target for phase 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
+The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, *File actions* and *Clipboard* describe SSR-15 and SSR-16 as built and verified, and *Help overlay* describes SSR-21 and SSR-22 as built and verified. *Files and persistence* is still the target for phase 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
 
 ## Shape
 
@@ -19,7 +19,7 @@ The code is vertical slices, one folder per feature, each split into the layers 
 | [`prefs`](../../src/prefs/mod.rs) | domain | `Preferences` and their defaults. It holds other slices' domain types, such as the magnification filter. |
 | [`file_actions`](../../src/file_actions/mod.rs) | domain, infrastructure, presentation | Delete, move and copy: `Action` and `Failure` in `domain`; the file action thread and the no-overwrite filesystem calls in `infrastructure`; the notice wording in `presentation`. |
 | [`clipboard`](../../src/clipboard/mod.rs) | domain, infrastructure, presentation | Ctrl+C and Ctrl+V: the outcomes and the pasted-image check in `domain`; the clipboard thread and `arboard` calls in `infrastructure`, with `load`'s decoders handed in by `shell`; the notice wording in `presentation`. |
-| [`help`](../../src/help/mod.rs) | domain | The help overlay: `Binding` and `Section`, the row type `shell::keymap::BINDINGS` hands in. The overlay itself arrives with SSR-22. |
+| [`help`](../../src/help/mod.rs) | domain, presentation | The help overlay: `Binding` and `Section` (the row type `shell::keymap::BINDINGS` hands in), the filter and the scroll arithmetic in `domain`; the egui panel in `presentation`. |
 | [`info_overlay`](../../src/info_overlay/mod.rs) | domain | Scaffold for SSR-17. |
 
 A layer that grows past one concern becomes a file with submodules beside it (`load/domain.rs` and `load/domain/preload.rs`), so paths still name the layer.
@@ -89,7 +89,7 @@ Built in the `load` slice: [infrastructure.rs](../../src/load/infrastructure.rs)
 
 - Notices live in the `notices` slice: `Notices` in [domain.rs](../../src/notices/domain.rs) decides what shows and how opaque, and [presentation.rs](../../src/notices/presentation.rs) draws it: top-right, oldest on top, at most 3 (a fourth drops the oldest). Each is fully visible for 3 s, then fades out over 0.5 s. Repeating a shown text restarts its timer and moves it to the bottom instead of stacking; `Notices::notify_as` gives a changing text, such as scan progress, a key so each update replaces the last. White 20 pt text on black at 240/255 alpha: the surface is sRGB, so egui blends in linear light, and lower alphas leave a mid-grey backing on white images. The top-left corner is left to the info overlay.
 - Redraws are on demand. `App::about_to_wait` sleeps until a notice starts fading or egui asks for a frame (it does after an area's first frame, which it spends measuring with nothing visible), and redraws every frame while a notice fades. Nothing animates once notices are gone: idle CPU is zero.
-- Input routing: every window event goes to egui first, so its pointer and modifier state stay current, but egui keeps an event only while one of its widgets has focus (the preferences screen). Otherwise all input goes to `keymap`. Notices never take clicks, so a drag that starts on a notice still pans.
+- Input routing: every window event goes to egui first, so its pointer and modifier state stay current, but egui keeps an event only while one of its widgets has focus (the help overlay's filter box; later the preferences screen). Otherwise input goes to the help overlay while it is open, then to `keymap`. Notices never take clicks, so a drag that starts on a notice still pans.
 
 ## View transform
 
@@ -175,7 +175,7 @@ Delete, M and C act on the image on screen, error cards included, even while the
 
 ## Help overlay
 
-The table is built (SSR-21); the overlay is the target for SSR-22.
+Built: the table in SSR-21, the overlay in SSR-22.
 
 - **One table.** `BINDINGS` in [keymap.rs](../../src/shell/keymap.rs) lists every binding as a `Row`: a `help::domain::Binding` (its keys as shown, what it does, its `Section`) and probes, sample inputs with the `Command` each must give. Matching stays the `match` in `for_key` and `Mouse`, because payloads, repeat rules and modifier guards read best as code; the keymap tests hold the two together:
   - every probe, replayed through `for_key`, `for_wheel` or `Mouse`, gives its command, and that command belongs to the probe's row;
@@ -183,8 +183,10 @@ The table is built (SSR-21); the overlay is the target for SSR-22.
   - [keymap.md](keymap.md)'s table equals `BINDINGS` row for row, read with `include_str!`; the debug-only F9 row comes last, after the doc's rows;
   - each section is one run of rows, so the overlay's headings follow table order;
   - only I and P, not built yet, have no probes; SSR-17 and SSR-18 add theirs.
-- **The overlay.** `?` toggles an egui panel listing `BINDINGS` by section, leaving out rows with no probes, as their keys do nothing yet, with a filter box that `/` focuses. Filtering (case-insensitive substring over keys and description) is `help::domain`; drawing is `help::presentation`. The row type lives in `help::domain` so `shell` hands rows inward.
-- **It is modal.** While it is open, `shell::app` routes all input to it before the keymap. Arrows, PgUp/PgDn, Home/End and the wheel scroll the list. Esc clears the filter, then closes the overlay. Clicks on the image do nothing. The slideshow and notices carry on. The preferences screen (SSR-18) uses the same routing.
+- **The overlay.** `?` (`Command::ToggleHelp`) sets `Shown::help` to a new `help::domain::Help`: empty filter, scrolled to the top. [help/presentation.rs](../../src/help/presentation.rs) draws it each frame from the rows `Row::works` keeps (rows with probes, so I and P stay hidden until they work): a filter box, a hint line, then the matching rows under section headings, keys in a column 35 % of the list wide (220 pt at most), descriptions wrapping beside them. `help::domain::matching` filters: a case-insensitive substring of keys or description, outer spaces ignored; nothing left reads `No bindings match`.
+- **Size.** At most 90 % of the window wide (760 pt at most) and 80 % high, its top a tenth of the way down, so filtering shortens it without moving the filter box. An egui `Area` offers its content only last frame's size, so the panel sets its maximum height itself every frame; without that, a list shortened by the filter never grew back. The backing is opaque grey 24: any see-through backing over a bright image tints the text's ground unevenly. Notices draw in egui's foreground layer, over it.
+- **It is modal.** `Shown::help_input` takes every key press, click and wheel turn before the keymap; key releases pass on, so a Space held as it opened stops repeating. With the filter box focused, egui has the keys and types them, `?` included; Esc or Enter leaves the box, and Esc also clears it. Otherwise `keymap::for_help_key` decides: arrows scroll a line, PgUp/PgDn a page (less one line), Home/End to the ends, all repeating while held; Esc and `?` close; `/` focuses the box, on the frame after, so the `/` is not typed into it; every other key does nothing. The wheel scrolls three lines per notch wherever the cursor is (`keymap::for_help_wheel`); egui's own wheel scrolling is off, or the list would scroll twice under the cursor. Scrolls accumulate in `Help::scroll` against the list as last measured, so several notches between two frames add up. Clicks reach egui, which drives the scroll bar and the filter box, and nothing else. The slideshow and notices carry on. The preferences screen (SSR-18) is to use the same routing.
+- Measured in a release build, client area 800 × 600: the wheel and End each brought the last row (`/`) into view and Home the first; `/` then `zoom` left the two zoom rows; `r delete`, Delete and Space typed in the filter, and R, Space, Delete and clicks pressed at the list, changed neither the image nor the files; Esc cleared the filter and a second closed the overlay, leaving the window 800 × 600; in fullscreen, Esc closed the overlay and stayed fullscreen. Closed again, Space, right click, R and the wheel acted as before.
 
 ## Preference defaults
 

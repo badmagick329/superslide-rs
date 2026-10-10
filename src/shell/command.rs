@@ -45,6 +45,10 @@ pub enum Command {
     CopyToClipboard,
     PasteFromClipboard,
     TogglePreferences,
+    /// ? opens the help overlay; while it is open, ? closes it.
+    ToggleHelp,
+    /// / focuses the help overlay's filter. Does nothing while the overlay is closed.
+    FocusHelpFilter,
     /// F9 in debug builds: a fixed notice, for checking notice timing and stacking by hand.
     #[cfg(debug_assertions)]
     TestNotice,
