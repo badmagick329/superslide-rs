@@ -73,6 +73,7 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
                 "s" | "S" => (Command::Shuffle, false),
                 "v" | "V" => (Command::ReverseSort, false),
                 "g" | "G" => (Command::ToggleGrouping, false),
+                "a" | "A" => (Command::ToggleSlideshow, false),
                 // The Shift key, not the character, so Caps Lock does not turn O recursive.
                 "o" | "O" => (
                     Command::Open {
@@ -253,6 +254,10 @@ mod tests {
         let f11 = Key::Named(NamedKey::F11);
         assert_eq!(for_key(&f11, none, false), Some(Command::ToggleFullscreen));
         assert_eq!(for_key(&f11, none, true), None);
+        // A held A would start and stop the slideshow thirty times a second.
+        let a = Key::Character("a".into());
+        assert_eq!(for_key(&a, none, false), Some(Command::ToggleSlideshow));
+        assert_eq!(for_key(&a, none, true), None);
         let right = Key::Named(NamedKey::ArrowRight);
         assert!(matches!(for_key(&right, none, true), Some(Command::Pan(_))));
         let plus = Key::Character("+".into());

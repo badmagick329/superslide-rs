@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub mod advance;
+pub mod slideshow;
 
 /// Direction of travel through the image list; the preload window leans this way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,18 +142,31 @@ impl ImageList {
     /// Moves the current image one step, wrapping from the last image to the first and back.
     /// Returns whether it wrapped.
     pub fn step(&mut self, direction: Direction) -> bool {
+        let Some((next, wrapped)) = self.neighbour(direction) else {
+            return false;
+        };
+        self.current = next;
+        wrapped
+    }
+
+    /// The image one step away, which [`Self::step`] would make current.
+    pub fn adjacent(&self, direction: Direction) -> Option<&Entry> {
+        self.neighbour(direction)
+            .map(|(position, _)| &self.entries[position])
+    }
+
+    /// Position one step away and whether reaching it wraps; `None` while empty.
+    fn neighbour(&self, direction: Direction) -> Option<(usize, bool)> {
         let len = self.entries.len();
         if len == 0 {
-            return false;
+            return None;
         }
-        let (next, wrapped) = match direction {
+        Some(match direction {
             Direction::Forward if self.current + 1 == len => (0, true),
             Direction::Forward => (self.current + 1, false),
             Direction::Backward if self.current == 0 => (len - 1, true),
             Direction::Backward => (self.current - 1, false),
-        };
-        self.current = next;
-        wrapped
+        })
     }
 
     /// Moves to the first image of the next or previous group, wrapping at the ends; previous
@@ -508,13 +522,17 @@ mod tests {
         let mut list = ImageList::new(sample(), Some(Path::new("f/IMG2.jpg")), by(SortKey::Name));
         assert!(!list.step(Direction::Forward));
         assert_eq!(list.current().unwrap().path, Path::new("f/img10.jpg"));
+        // The slideshow looks one step ahead before taking it.
+        let ahead = list.adjacent(Direction::Forward).unwrap().path.clone();
         assert!(list.step(Direction::Forward));
+        assert_eq!(list.current().unwrap().path, ahead);
         assert_eq!(list.current_position(), 0);
         assert!(list.step(Direction::Backward));
         assert_eq!(list.current_position(), 3);
 
         let mut empty = ImageList::new(Vec::new(), None, by(SortKey::Name));
         assert!(!empty.step(Direction::Forward));
+        assert!(empty.adjacent(Direction::Forward).is_none());
         assert!(empty.current().is_none());
     }
 

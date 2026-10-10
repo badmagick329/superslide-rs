@@ -24,7 +24,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Screen rotation | Turning how the current image is drawn by 90°. Never written to the file; lasts until the app closes. | lossless rotation, EXIF rotation | |
 | Session restore | On startup, reopening the last image list, current image, sort mode, shuffle order and window placement. | | `Session` |
 | Shuffle | The sort mode that gives the image list a random order, kept until the next shuffle. | random | |
-| Slideshow | Timed automatic advance to the next image, toggled with A. | | |
+| Slideshow | Timed automatic advance to the next image, toggled with A. | | `Slideshow` |
 | Sort mode | The image list's order: name (N), date (D), size (Z) or shuffle (S); V reverses it. | | `SortMode` |
 | Target folder | The folder M or C last moved or copied an image to; the next folder picker opens there. | | |
 | Zoom | Scaling the image relative to fit, by right-drag, wheel, + / - or Ctrl+ / Ctrl- (double or half). | | |

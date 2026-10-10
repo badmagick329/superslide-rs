@@ -1,6 +1,6 @@
 # Keymap
 
-The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, rows arriving with their issues (so far navigation, group jumps, fullscreen, zoom, pan, rotation, the magnification filter, sort keys and O / Shift+O). egui sees input first but keeps it only while one of its widgets has focus. Change both together.
+The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, rows arriving with their issues (so far navigation, group jumps, the slideshow, fullscreen, zoom, pan, rotation, the magnification filter, sort keys and O / Shift+O). egui sees input first but keeps it only while one of its widgets has focus. Change both together.
 
 | Input | Command |
 | --- | --- |

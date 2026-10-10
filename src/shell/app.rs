@@ -13,6 +13,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::browse::domain::advance::AdvanceLimit;
+use crate::browse::domain::slideshow::Slideshow;
 use crate::browse::domain::{Direction, ImageList, Order, SortMode, folder};
 use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
 use crate::browse::presentation::describe;
@@ -45,6 +46,7 @@ const SCAN_NOTICE: &str = "scan";
 const LOADING_NOTICE: &str = "loading";
 /// Key of the notice naming the image list's order, so pressing sort keys in a row replaces it.
 const ORDER_NOTICE: &str = "order";
+const SLIDESHOW_NOTICE: &str = "slideshow";
 const TITLE: &str = "SuperSlide-RS";
 /// Waits shorter than this pass without a notice: a flash of `Loading…` on every image change
 /// would be noise.
@@ -113,6 +115,7 @@ struct Shown {
     /// Which way the owner last moved; the preload window leans this way.
     direction: Direction,
     advance: AdvanceLimit,
+    slideshow: Slideshow,
     /// Screen rotation per path, until the app closes; across opens too.
     turns: HashMap<PathBuf, u8>,
     cache: PreloadCache<Cached>,
@@ -240,6 +243,7 @@ impl ApplicationHandler<AppEvent> for App {
         let preferences = Preferences::default();
         let budget = u64::from(preferences.preload_budget_mb) << 20;
         let advance_limit = Duration::from_millis(preferences.advance_limit_ms.into());
+        let slideshow_interval = Duration::from_secs(preferences.slideshow_interval_s.into());
         let egui = egui::Context::default();
         let egui_input = egui_winit::State::new(
             egui.clone(),
@@ -261,6 +265,7 @@ impl ApplicationHandler<AppEvent> for App {
             images: None,
             direction: Direction::Forward,
             advance: AdvanceLimit::new(advance_limit),
+            slideshow: Slideshow::new(slideshow_interval),
             turns: HashMap::new(),
             cache: PreloadCache::new(budget),
             workers,
@@ -360,7 +365,9 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     /// Opens a burst of drops. Sleeps until a notice starts fading, `Loading…` is due, a held key
-    /// may advance or egui asks for a frame; redraws every frame while a notice fades.
+    /// may advance, the slideshow interval ends or egui asks for a frame; redraws every frame
+    /// while a notice fades. A slideshow waiting on a decode needs no wake-up: the decode result
+    /// is an event, and this runs again after it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if !self.dropped.is_empty() {
             let paths = std::mem::take(&mut self.dropped);
@@ -370,6 +377,9 @@ impl ApplicationHandler<AppEvent> for App {
         let now = Instant::now();
         if let Some(direction) = shown.advance.tick(now) {
             shown.navigate(direction);
+        }
+        if shown.slideshow.tick(now, shown.next_ready()) {
+            shown.navigate(Direction::Forward);
         }
         if let Some(waiting) = &mut shown.waiting
             && !waiting.noticed
@@ -389,6 +399,7 @@ impl ApplicationHandler<AppEvent> for App {
             shown.egui_repaint_at,
             loading_at,
             shown.advance.due(),
+            shown.slideshow.due().filter(|&due| due > now),
         ]
         .into_iter()
         .flatten()
@@ -420,6 +431,10 @@ impl Shown {
         if list.len() == 0 {
             return;
         }
+        if self.slideshow.stop() {
+            self.notices
+                .notify_as(SLIDESHOW_NOTICE, "Slideshow off", now);
+        }
         self.cache
             .reindex(list.entries().iter().map(|entry| entry.path.as_path()));
         self.images = Some(list);
@@ -449,8 +464,10 @@ impl Shown {
     }
 
     /// The current image changed; wrapping round an end is easy to miss, so it gets a notice.
+    /// Every change, manual or not, gives the slideshow a full interval.
     fn moved(&mut self, direction: Direction, wrapped: bool) {
         let now = Instant::now();
+        self.slideshow.restart(now);
         if wrapped {
             let text = match direction {
                 Direction::Forward => "Wrapped to the first image",
@@ -498,6 +515,16 @@ impl Shown {
                 .pick_file()
                 .map(|file| Open::Paths(vec![file]))
         }
+    }
+
+    /// Whether the slideshow's next image is decoded, or failed to; either can go on screen at
+    /// once. A list of one has no next image.
+    fn next_ready(&self) -> bool {
+        self.images
+            .as_ref()
+            .filter(|images| images.len() > 1)
+            .and_then(|images| images.adjacent(Direction::Forward))
+            .is_some_and(|entry| self.cache.get(&entry.path).is_some())
     }
 
     /// Points the preload cache and the workers at the window around the current image.
@@ -650,6 +677,15 @@ impl Shown {
                 return self.navigate(direction);
             }
             Command::JumpGroup(direction) => return self.jump_group(direction),
+            // Without an image list there is nothing to show; opening one would stop it anyway.
+            Command::ToggleSlideshow if self.images.is_some() => {
+                let now = Instant::now();
+                let text = match self.slideshow.toggle(now) {
+                    true => "Slideshow on",
+                    false => "Slideshow off",
+                };
+                self.notices.notify_as(SLIDESHOW_NOTICE, text, now);
+            }
             Command::Sort(key) => {
                 return self.reorder(|order| Order {
                     mode: SortMode::By(key),

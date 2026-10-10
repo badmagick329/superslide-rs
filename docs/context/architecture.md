@@ -12,7 +12,7 @@ The code is vertical slices, one folder per feature, each split into the layers 
 | --- | --- | --- |
 | [`shell`](../../src/shell/mod.rs) | | The outer layer: [`app`](../../src/shell/app.rs) (the winit `ApplicationHandler`: owns all state, runs commands), [`command`](../../src/shell/command.rs) (`Command`, everything the owner can ask for), [`keymap`](../../src/shell/keymap.rs) (the only place bindings are decided) and [`render`](../../src/shell/render.rs) (wgpu, textures, mips, the quad pipeline, egui painting). |
 | [`image_file`](../../src/image_file/mod.rs) | domain | The shared kernel: `Format` (the one list of extensions, and their signatures) and EXIF `Orientation`. |
-| [`browse`](../../src/browse/mod.rs) | domain, infrastructure, presentation | The image list, its order and group jumps in `domain`, with the advance limit in [`domain::advance`](../../src/browse/domain/advance.rs); scanning paths into it, on its own thread, with the folder filter, in `infrastructure`; the wording of the order notice in `presentation`. |
+| [`browse`](../../src/browse/mod.rs) | domain, infrastructure, presentation | The image list, its order and group jumps in `domain`, with the advance limit in [`domain::advance`](../../src/browse/domain/advance.rs) and the slideshow timer in [`domain::slideshow`](../../src/browse/domain/slideshow.rs); scanning paths into it, on its own thread, with the folder filter, in `infrastructure`; the wording of the order notice in `presentation`. |
 | [`load`](../../src/load/mod.rs) | domain, infrastructure, presentation | `Decoded`, `DecodeError` and the trust rules (content matches name, size cap, fit to GPU) in `domain`, with the preload cache's policy in [`domain::preload`](../../src/load/domain/preload.rs); the decoders and the decode workers ([`infrastructure::workers`](../../src/load/infrastructure/workers.rs)) in `infrastructure`; the error card in `presentation`. |
 | [`view`](../../src/view/mod.rs) | domain | The view transform (fit, zoom, pan, screen rotation, EXIF orientation) and the magnification filter. Pure math. |
 | [`notices`](../../src/notices/mod.rs) | domain, presentation | Notice timing and stacking in `domain`; egui drawing and count wording in `presentation`. |
@@ -99,11 +99,13 @@ Built in [keymap.rs](../../src/shell/keymap.rs) as `keymap::Mouse`. A press that
 
 ## Advance limit and slideshow
 
-The advance limit is built as `AdvanceLimit` in [advance.rs](../../src/browse/domain/advance.rs); the slideshow (SSR-13) will share its wake-up through `ControlFlow::WaitUntil`.
+Built as `AdvanceLimit` in [advance.rs](../../src/browse/domain/advance.rs) and `Slideshow` in [slideshow.rs](../../src/browse/domain/slideshow.rs). `App::about_to_wait` ticks both and sleeps until the sooner of their deadlines through `ControlFlow::WaitUntil`.
 
 - A press of Space or Backspace, or a click, always advances. Key repeat counts only as proof the key is still down: a repeat after the limit advances at once; an earlier one is held and advances the moment the limit passes (`AdvanceLimit::due`, which `App::about_to_wait` sleeps until), so the pace is the limit itself, not the limit rounded up to the keyboard's repeat rate. Letting the key go drops a held repeat. A key whose release is never seen advances at most once more, since only a repeat arms the timer.
 - Measured: holding Space for 10 s over 24 MP JPEGs advanced 20 times, one every 500 ms.
-- The slideshow advances every slideshow interval, but only once the next image is in the preload cache; a manual navigation restarts the interval.
+- A toggles the slideshow, with a `Slideshow on` / `Slideshow off` notice; it does nothing before an image list is open. It advances every slideshow interval, wrapping at the end with the usual notice, but only once the next image is in the preload cache (decoded or failed). Past the interval, a next image still decoding holds the current one on screen: no `Loading…`, and no wake-up either, since the decode result is itself an event and `about_to_wait` runs after it. A list of one image never advances.
+- Every image change restarts the interval (`Shown::moved`), manual or not, and the interval after a wait is a full one, so each image stays up at least the interval. Sorting does not restart it. An open that replaces the image list stops the slideshow with `Slideshow off`; one that finds nothing leaves it running.
+- Measured (debug build, 24 MP JPEGs): changes 10.0 s apart; Space at 25.0 s changed the image and the next change came at 35.0 s. S just before the interval ended put an undecoded image next: the slideshow held the current one 1.1 s past the interval, with no `Loading…`.
 
 ## Opening
 
