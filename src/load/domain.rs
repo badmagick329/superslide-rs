@@ -2,15 +2,12 @@
 //! its name, its size is within reach, and it fits the GPU. Orientation is applied at draw time,
 //! never to the pixels.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "scaffold: workers arrive with the preload cache")
-)]
-
 use std::fmt;
 use std::io;
 
 use crate::image_file::domain::{Format, Orientation};
+
+pub mod preload;
 
 /// Larger images are refused before any pixel buffer exists: a few kilobytes of JPEG can claim
 /// 65535 × 65535, which is 17 GB as RGBA. 2^28 pixels is 1 GiB as RGBA, and still takes a
@@ -21,6 +18,10 @@ pub struct Decoded {
     /// Size of `pixels`: the stored size, or smaller when it was downscaled to fit the GPU.
     pub size: [u32; 2],
     /// Size in the file, before any downscale, for the info overlay.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "scaffold: the info overlay shows it (SSR-17)")
+    )]
     pub original_size: [u32; 2],
     /// RGBA8 in sRGB, row-major, no row padding.
     pub pixels: Vec<u8>,

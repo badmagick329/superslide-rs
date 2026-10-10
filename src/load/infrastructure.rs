@@ -2,11 +2,6 @@
 //! for orientation and fast_image_resize for the oversize downscale. Their output is checked
 //! against `load::domain`'s rules before it is trusted.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "scaffold: workers arrive with the preload cache")
-)]
-
 use std::io::Cursor;
 use std::path::Path;
 
@@ -19,6 +14,8 @@ use zune_jpeg::zune_core::options::DecoderOptions;
 
 use crate::image_file::domain::{Format, Orientation};
 use crate::load::domain::{DecodeError, Decoded, MAX_PIXELS, check_size, confirm, fit_within};
+
+pub mod workers;
 
 /// Decodes the image at `path`, downscaling it if a side exceeds `max_dim` (the GPU's texture
 /// limit). The format comes from the extension, as for the scan.

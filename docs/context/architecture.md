@@ -13,39 +13,48 @@ The code is vertical slices, one folder per feature, each split into the layers 
 | [`shell`](../../src/shell/mod.rs) | | The outer layer: [`app`](../../src/shell/app.rs) (the winit `ApplicationHandler`: owns all state, runs commands), [`command`](../../src/shell/command.rs) (`Command`, everything the owner can ask for), [`keymap`](../../src/shell/keymap.rs) (the only place bindings are decided) and [`render`](../../src/shell/render.rs) (wgpu, textures, mips, the quad pipeline, egui painting). |
 | [`image_file`](../../src/image_file/mod.rs) | domain | The shared kernel: `Format` (the one list of extensions, and their signatures) and EXIF `Orientation`. |
 | [`browse`](../../src/browse/mod.rs) | domain, infrastructure | The image list and its order in `domain`; scanning paths into it, on its own thread, with the folder filter, in `infrastructure`. |
-| [`load`](../../src/load/mod.rs) | domain, infrastructure | `Decoded`, `DecodeError` and the trust rules (content matches name, size cap, fit to GPU) in `domain`; the decoders in `infrastructure`. The preload cache and its workers land here (SSR-11). |
+| [`load`](../../src/load/mod.rs) | domain, infrastructure, presentation | `Decoded`, `DecodeError` and the trust rules (content matches name, size cap, fit to GPU) in `domain`, with the preload cache's policy in [`domain::preload`](../../src/load/domain/preload.rs); the decoders and the decode workers ([`infrastructure::workers`](../../src/load/infrastructure/workers.rs)) in `infrastructure`; the error card in `presentation`. |
 | [`view`](../../src/view/mod.rs) | domain | The view transform (fit, zoom, pan, screen rotation, EXIF orientation) and the magnification filter. Pure math. |
 | [`notices`](../../src/notices/mod.rs) | domain, presentation | Notice timing and stacking in `domain`; egui drawing and count wording in `presentation`. |
 | [`prefs`](../../src/prefs/mod.rs) | domain | `Preferences` and their defaults. It holds other slices' domain types, such as the magnification filter. |
 | [`info_overlay`](../../src/info_overlay/mod.rs), [`file_actions`](../../src/file_actions/mod.rs), [`clipboard`](../../src/clipboard/mod.rs) | domain, domain, none | Scaffolds for SSR-17, SSR-15 and SSR-16. |
+
+A layer that grows past one concern becomes a file with submodules beside it (`load/domain.rs` and `load/domain/preload.rs`), so paths still name the layer.
 
 [`main`](../../src/main.rs) reads command-line paths, builds the event loop and hands control to `shell::app`. Unit tests sit beside the code they test; every `domain` and the `browse` and `load` infrastructure carry them, and none needs a window or GPU, so tests run headless.
 
 ## Threads
 
 - **Main thread**: the winit event loop, all state, all wgpu calls, egui. Nothing on it blocks on decoding or scanning; the only blocking calls are the native file and folder dialogs, which are modal by nature.
-- **Decode workers**: `min(available_parallelism - 1, 4)` threads, at least 1, taking jobs from the preload cache's priority queue.
+- **Decode workers**: `min(available_parallelism - 1, 4)` threads, at least 1, taking the highest-priority job from one shared queue (`load::infrastructure::workers::Workers`). A decoder panic is caught and becomes that file's error, so a hostile file costs one image, not a worker. Dropping `Workers` stops them after their current decode.
 - **Scan thread**: one per open, walking the filesystem; sends the finished, sorted image list back, plus progress counts for a notice. Dropping the `browse::infrastructure::Scan` handle cancels it, and the app tags each scan's events with a generation number, so a newer open replaces an older one and its late events are ignored.
 
-Workers and the scan thread send `shell::app::AppEvent`s through the event loop's `EventLoopProxy`, which also wakes the loop. GPU upload happens on the main thread when the result arrives.
+Workers and the scan thread send `shell::app::AppEvent`s through the event loop's `EventLoopProxy`, which also wakes the loop. GPU upload happens on the main thread when the result arrives, and the CPU pixels are dropped right after.
 
 ## Image change
 
-Navigation moves the current image immediately in the image list but keeps drawing the previous texture until the new one is ready, then swaps in a single frame: no blank frame, ever. After 150 ms without the new image, a notice shows `Loading…`. A file that fails to decode gets an error card naming the file and reason; navigation continues past it.
+Built in [app.rs](../../src/shell/app.rs) (`Shown::show_current`). Navigation moves the current image in the image list at once, but the screen keeps the previous texture (`Showing`) until the new image is in the preload cache, then swaps in a single frame: no blank frame, ever. Each image opens at fit. After 150 ms without the new image, a `Loading…` notice shows; it is dismissed the moment the image arrives. A file that fails to decode shows an error card, centred, with its file name and the `DecodeError` line; view commands do nothing on it and navigation continues past it.
 
-Navigation wraps from the last image to the first and back, with a notice saying so.
+Next and previous step once per press and wrap at the ends (`ImageList::step`). The rest of navigation (advance limit, wrap notice, screen rotation per path, window title) is SSR-12.
 
 ## Preload cache
 
-- Keyed by path, so re-sorting keeps decoded images.
-- The **preload window** is the current image, then 3 ahead and 1 behind in the direction of travel (reversed when the owner navigates backwards). Job priority follows that order; the current image always outranks the rest.
-- Budget: GPU texture bytes including mips (`w × h × 4 × 4/3`), default 1024 MB. Over budget, evict the entry furthest from the current image outside the preload window.
-- A worker drops a job that left the preload window before it started. A decode already running finishes and its result is cached if it still fits; mid-decode cancellation is not attempted.
-- CPU pixels are freed after upload. Ctrl+C re-decodes the file.
+The policy is [preload.rs](../../src/load/domain/preload.rs), generic over what it holds so its tests need no GPU; `shell::app` stores textures in it and drives the workers.
+
+- `preload_window` gives the current image, then 3 ahead and 1 behind in the direction of travel (the last navigation's direction), wrapping at the list's ends. That order is the job priority.
+- On every navigation or open, the cache is retargeted and `Workers::request` replaces the whole queue with the window's images not yet held, so a job that left the window before a worker reached it is never decoded. A decode already running finishes; an image requested again while it runs is not queued twice.
+- Keyed by path, so re-sorting keeps decoded images. Each entry also keeps its image list position for distances; `PreloadCache::reindex` refreshes them after the list changes and drops entries no longer in it.
+- Budget: GPU texture bytes including mips (`render::texture_bytes`, `w × h × 4 × 4/3`), default 1024 MB. Over budget, the entry furthest from the current image outside the preload window goes, distance measured round the wrap.
+- The preload window itself is never evicted, even past the budget: an image the owner is about to see must not be thrown away and decoded again. With images above about 200 MB of texture (about 40 MP), the cache can exceed the budget by up to the window's five images.
+- A result outside the window is kept only if it fits as things stand, and is checked before upload, so a result nobody keeps is never uploaded. Failed decodes are cached too, at no cost, so returning to one shows its error card without decoding it again.
+- The image on screen is shared (`Rc`) between the cache and the screen, so evicting it does not free it mid-display.
+- Debug builds log the cache's size to stderr after each result.
+- Measured on an RTX 3070, debug build, 200 JPEGs of 6000 × 4000 (122 MB of texture each): paging forward and backward at 2 presses a second for a minute, every image was on screen within 50 ms of the key, except one cold image just after starting backwards. The cache held 976 MB throughout; Task Manager's dedicated GPU memory stayed flat at about 1.5 GB, which is 274 MB for the app with no image, the cache, and wgpu allocator and staging slack.
+- Ctrl+C re-decodes the file.
 
 ## Decoding
 
-Built in the `load` slice: [infrastructure.rs](../../src/load/infrastructure.rs)'s `decode(path, max_dim)` returns `Decoded` (RGBA8 pixels, their size, the original size for the info overlay, EXIF orientation) or a `DecodeError`, both from [domain.rs](../../src/load/domain.rs), which also holds the checks below that need no decoder. Not yet called by the app; the preload cache's workers will call it.
+Built in the `load` slice: [infrastructure.rs](../../src/load/infrastructure.rs)'s `decode(path, max_dim)` returns `Decoded` (RGBA8 pixels, their size, the original size for the info overlay, EXIF orientation) or a `DecodeError`, both from [domain.rs](../../src/load/domain.rs), which also holds the checks below that need no decoder. The decode workers call it.
 
 - Formats by extension, case-insensitive: `jpg`, `jpeg`, `png`, `tga`, `bmp`. `image_file::domain::Format::from_path` is the one list; the scan's `browse::infrastructure::is_image` asks it. JPEG uses `zune-jpeg`; the rest use `image`.
 - The leading bytes must confirm the extension. Another known format's signature gives `Misnamed: a PNG file, not JPEG`; TGA has no signature, so only another format's signature rejects a `.tga`. Browsers do save misnamed files: one of 101 in the owner's Downloads was a PNG named `.jpg`.
@@ -62,10 +71,10 @@ Built in the `load` slice: [infrastructure.rs](../../src/load/infrastructure.rs)
 - Built in [render.rs](../../src/shell/render.rs) and [quad.wgsl](../../src/shell/quad.wgsl): `wgpu` on the Dx12 backend, an sRGB surface format, `PresentMode::Fifo` (vsync, no tearing). If no hardware adapter is found, request one with `force_fallback_adapter` (WARP); `SUPERSLIDE_FORCE_WARP=1` forces that path for testing. The chosen adapter is logged to stderr, which only debug builds show.
 - The device is requested with the adapter's own limits, not wgpu's defaults: the defaults cap textures at 8192 px where Dx12 hardware takes 16384. `Renderer::max_texture_dimension` holds the result for decode.
 - A startup failure (no window, no adapter, no device) shows a message box and exits: no overlay exists yet and release builds have no console.
-- One texture per cached image (`shell::render::ImageTexture`), `Rgba8UnormSrgb`, full mip chain (`floor(log2(max(w, h))) + 1` levels), generated after upload by a render pass per level ([mip.wgsl](../../src/shell/mip.wgsl)) that samples the level above with a linear filter. The sRGB format makes that average gamma-correct: 1 px black-and-white stripes shrink to sRGB 188, not 128. `ImageTexture::bytes` reports `w × h × 4 × 4/3` for the preload budget.
+- One texture per cached image (`shell::render::ImageTexture`), `Rgba8UnormSrgb`, full mip chain (`floor(log2(max(w, h))) + 1` levels), generated after upload by a render pass per level ([mip.wgsl](../../src/shell/mip.wgsl)) that samples the level above with a linear filter. The sRGB format makes that average gamma-correct: 1 px black-and-white stripes shrink to sRGB 188, not 128. `render::texture_bytes` gives `w × h × 4 × 4/3` for the preload budget, from the size alone, so a result can be turned down before upload.
 - `Renderer::upload` writes pixels in slices of about 16 MB, since `write_texture` stages each call in one buffer and wgpu's default buffer limit is 256 MB. It blocks until the GPU finishes, so the stderr log of each upload's time is real and staging memory is freed before the next upload. Measured on an RTX 3070, release build: 48 MP in 53–75 ms, warm.
-- Until decoding lands, a generated image stands in: a checkerboard, or with `SUPERSLIDE_STAND_IN=stripes` an 8000 × 6000 image of 1 px stripes for checking moiré and upload time; `white` and `black` are solid, for checking overlay legibility.
-- One quad, one draw, no vertex buffer. A uniform holds a 2×2 matrix and offset from `view` (`view::domain::Transform`, which documents the coordinates) plus the window size, mapping the quad to window pixels. EXIF orientation (including its mirrorings) and screen rotation are both folded into that matrix.
+- Until the first image opens, a generated image stands in: a checkerboard, or with `SUPERSLIDE_STAND_IN=stripes` an 8000 × 6000 image of 1 px stripes for checking moiré and upload time; `white` and `black` are solid, for checking overlay legibility.
+- One quad, one draw, no vertex buffer; on an error card, no draw, just the black clear under egui. A uniform holds a 2×2 matrix and offset from `view` (`view::domain::Transform`, which documents the coordinates) plus the window size, mapping the quad to window pixels. EXIF orientation (including its mirrorings) and screen rotation are both folded into that matrix.
 - Sampling: trilinear by default. Ctrl+F switches magnification to nearest, for sharp pixels at high zoom; minification stays mipmapped linear so a shrunk image never aliases. The quad's bind group 0 holds the uniforms and sampler, one prebuilt group per filter, so the toggle rebuilds nothing; group 1 is the image.
 - egui (`egui-winit` for input, `egui-wgpu` for painting) draws on the same device after the image, in the same render pass. egui's texture changes are applied even on a skipped frame, or a font atlas sent then would never arrive.
 
@@ -77,7 +86,7 @@ Built in the `load` slice: [infrastructure.rs](../../src/load/infrastructure.rs)
 
 ## View transform
 
-Built in [view/domain.rs](../../src/view/domain.rs) as `View`: one per shown image, holding the stored image size, window size, EXIF orientation, quarter-turns of screen rotation, zoom relative to fit, and the image point at the window centre. That point is kept in image coordinates, so a window resize keeps the same detail centred at the same zoom relative to fit. `View::transform` produces the quad uniform's matrix and offset; orientation and screen rotation compose into one signed-permutation matrix, so mirrored orientations need no special case. Opening an image starts at fit and centred; screen rotation survives navigation away and back, per path, until the app closes (`View::turns` carries it; wired with navigation).
+Built in [view/domain.rs](../../src/view/domain.rs) as `View`: one per shown image, holding the stored image size, window size, EXIF orientation, quarter-turns of screen rotation, zoom relative to fit, and the image point at the window centre. That point is kept in image coordinates, so a window resize keeps the same detail centred at the same zoom relative to fit. `View::transform` produces the quad uniform's matrix and offset; orientation and screen rotation compose into one signed-permutation matrix, so mirrored orientations need no special case. Opening an image starts at fit and centred; screen rotation survives navigation away and back, per path, until the app closes (`View::turns` carries it; wired with SSR-12, so for now every image opens unrotated).
 
 - Zoom from right-drag or the wheel anchors at the cursor; from keys, at the window centre. Zoom range 1/8× fit to 32× native pixels, except that fit stays reachable when it is already past 32× (a tiny image in a large window).
 - Pan clamps so the image cannot leave the window: an image smaller than the window on an axis stays centred on that axis; a larger one keeps covering the window. Every zoom, pan and resize reapplies the clamp.
@@ -97,7 +106,7 @@ One timer drives both, through `ControlFlow::WaitUntil`.
 
 ## Opening
 
-Built in [browse/infrastructure.rs](../../src/browse/infrastructure.rs): `Open` names the route, `scan` walks it (`walkdir`) and returns a `Found` holding the `ImageList`, the count of unreadable folders (skipped, never fatal) and the paths given to open that do not exist. Only command-line paths are wired so far; they open through the same `Open::Paths` route drops will use. Until navigation lands, the result is only a notice (`12,345 images`, plus `Skipped 3 unreadable folders` or `Not found: …` when they apply).
+Built in [browse/infrastructure.rs](../../src/browse/infrastructure.rs): `Open` names the route, `scan` walks it (`walkdir`) and returns a `Found` holding the `ImageList`, the count of unreadable folders (skipped, never fatal) and the paths given to open that do not exist. Only command-line paths are wired so far; they open through the same `Open::Paths` route drops will use. The result replaces the image list, loads the current image through the preload cache and shows a notice (`12,345 images`, plus `Skipped 3 unreadable folders` or `Not found: …` when they apply).
 
 | Route | Image list |
 | --- | --- |

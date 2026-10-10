@@ -8,7 +8,6 @@ use std::time::SystemTime;
 
 /// Direction of travel through the image list; the preload window leans this way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(dead_code, reason = "scaffold: navigation arrives with its issue")]
 pub enum Direction {
     Forward,
     Backward,
@@ -128,20 +127,34 @@ impl ImageList {
         self.entries.len()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "scaffold: navigation arrives with its issue")
-    )]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "scaffold: navigation arrives with its issue")
-    )]
     pub fn current(&self) -> Option<&Entry> {
         self.entries.get(self.current)
+    }
+
+    /// Position of the current image; meaningless while the list is empty.
+    pub fn current_position(&self) -> usize {
+        self.current
+    }
+
+    /// Moves the current image one step, wrapping from the last image to the first and back.
+    /// Returns whether it wrapped.
+    pub fn step(&mut self, direction: Direction) -> bool {
+        let len = self.entries.len();
+        if len == 0 {
+            return false;
+        }
+        let (next, wrapped) = match direction {
+            Direction::Forward if self.current + 1 == len => (0, true),
+            Direction::Forward => (self.current + 1, false),
+            Direction::Backward if self.current == 0 => (len - 1, true),
+            Direction::Backward => (self.current - 1, false),
+        };
+        self.current = next;
+        wrapped
     }
 
     #[cfg_attr(
@@ -164,7 +177,8 @@ impl ImageList {
         self.current = current.and_then(|path| self.position(&path)).unwrap_or(0);
     }
 
-    fn position(&self, path: &Path) -> Option<usize> {
+    /// A linear search: fine per decode result, too slow per cache entry.
+    pub fn position(&self, path: &Path) -> Option<usize> {
         self.entries.iter().position(|entry| entry.path == path)
     }
 }
@@ -462,5 +476,21 @@ mod tests {
             assert_eq!(list.order(), order);
             assert_eq!(list.current().unwrap().path, current, "{order:?}");
         }
+    }
+
+    #[test]
+    fn stepping_wraps_at_both_ends() {
+        // Name order: b, img1, IMG2, img10.
+        let mut list = ImageList::new(sample(), Some(Path::new("f/IMG2.jpg")), by(SortKey::Name));
+        assert!(!list.step(Direction::Forward));
+        assert_eq!(list.current().unwrap().path, Path::new("f/img10.jpg"));
+        assert!(list.step(Direction::Forward));
+        assert_eq!(list.current_position(), 0);
+        assert!(list.step(Direction::Backward));
+        assert_eq!(list.current_position(), 3);
+
+        let mut empty = ImageList::new(Vec::new(), None, by(SortKey::Name));
+        assert!(!empty.step(Direction::Forward));
+        assert!(empty.current().is_none());
     }
 }

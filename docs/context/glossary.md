@@ -7,7 +7,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Advance limit | The shortest interval between image changes while Space or Backspace is held. | fast-forward, fast-back | |
 | Clipboard image | An image pasted with Ctrl+V, shown in place of the current image but outside the image list; file actions are disabled on it. | | |
 | Current image | The image on screen, one position in the image list. | current slide | |
-| Error card | What is drawn in place of an image that failed to decode: the file name and a one-line reason. | | |
+| Error card | What is drawn in place of an image that failed to decode: the file name and a one-line reason. | | `load::presentation::error_card` |
 | Fit | The zoom level at which the whole image fits the window; every image opens at fit. | | |
 | Folder filter | Folder names excluded when opening a folder. | family filter, excluded folders | |
 | Group by subfolder | Ordering that keeps each subfolder's images together, sorted by the sort mode within each group; Ctrl+Left/Right jumps between groups. | | |
@@ -18,8 +18,8 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Notice | A short text shown over the image that fades after a few seconds, for errors, progress and confirmations. | toast, popup | |
 | Pan | Moving a zoomed image within the window by drag or arrow keys. | scroll | |
 | Preferences | The owner's persisted options, and the screen opened with P that edits them. | settings, config, options | `Preferences` |
-| Preload cache | Decoded images held on the GPU under a memory budget so navigation shows them without waiting. | | |
-| Preload window | The images the preload cache wants: the current image, 3 ahead and 1 behind in the direction of travel. | | |
+| Preload cache | Decoded images held on the GPU under a memory budget so navigation shows them without waiting. | | `PreloadCache` |
+| Preload window | The images the preload cache wants: the current image, 3 ahead and 1 behind in the direction of travel. | | `preload_window` |
 | Recursive open | Opening a folder together with all its subfolders (Shift+O); sets the sort mode to shuffle. | | |
 | Screen rotation | Turning how the current image is drawn by 90°. Never written to the file; lasts until the app closes. | lossless rotation, EXIF rotation | |
 | Session restore | On startup, reopening the last image list, current image, sort mode, shuffle order and window placement. | | `Session` |

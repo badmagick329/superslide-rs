@@ -26,6 +26,9 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
     let (command, repeats) = match key {
         Key::Named(NamedKey::F11 | NamedKey::Enter) => (Command::ToggleFullscreen, false),
         Key::Named(NamedKey::Escape) => (Command::LeaveFullscreenOrQuit, false),
+        // Held, these will repeat under the advance limit (SSR-12); until then, once per press.
+        Key::Named(NamedKey::Space) if plain => (Command::Next, false),
+        Key::Named(NamedKey::Backspace) if plain => (Command::Previous, false),
         #[cfg(debug_assertions)]
         Key::Named(NamedKey::F9) => (Command::TestNotice, false),
         Key::Named(

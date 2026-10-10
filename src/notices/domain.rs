@@ -47,6 +47,12 @@ impl Notices {
         });
     }
 
+    /// Takes down the notice shown under `key` at once, for one whose news is overtaken, such as
+    /// `Loading…` once the image is on screen.
+    pub fn dismiss(&mut self, key: &str) {
+        self.shown.retain(|notice| notice.key != key);
+    }
+
     /// When the notices next look different: `now` while one is fading (redraw every frame),
     /// else when the next fade starts. `None` when nothing is shown.
     pub fn next_change(&self, now: Instant) -> Option<Instant> {
@@ -108,6 +114,16 @@ mod tests {
         notices.notify("other", start);
         notices.notify_as("scan", "Scanning… 20", start + Duration::from_secs(1));
         assert_eq!(texts(&notices), ["other", "Scanning… 20"]);
+    }
+
+    #[test]
+    fn a_dismissed_notice_leaves_at_once_and_alone() {
+        let now = Instant::now();
+        let mut notices = Notices::default();
+        notices.notify_as("loading", "Loading…", now);
+        notices.notify("other", now);
+        notices.dismiss("loading");
+        assert_eq!(texts(&notices), ["other"]);
     }
 
     #[test]

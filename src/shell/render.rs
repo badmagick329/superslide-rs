@@ -61,11 +61,6 @@ impl ImageTexture {
     pub fn size(&self) -> [u32; 2] {
         self.size
     }
-
-    /// GPU memory held, counted against the preload budget.
-    pub fn bytes(&self) -> u64 {
-        texture_bytes(self.size)
-    }
 }
 
 /// One frame of egui output, tessellated, ready to paint over the image.
@@ -374,7 +369,7 @@ impl Renderer {
         };
         eprintln!(
             "superslide: uploaded {width} × {height} ({levels} mip levels, {} MB) in {} ms",
-            image.bytes() >> 20,
+            texture_bytes(size) >> 20,
             start.elapsed().as_millis()
         );
         image
@@ -391,9 +386,10 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// The image, then egui over it, in one pass. egui's texture changes apply even when the frame
-    /// is skipped, or a font atlas sent then would never arrive.
-    pub fn draw(&mut self, image: &ImageTexture, transform: Transform, mut ui: UiFrame) {
+    /// The image, if any, then egui over it, in one pass. Without an image the window is black
+    /// under egui, for the error card. egui's texture changes apply even when the frame is
+    /// skipped, or a font atlas sent then would never arrive.
+    pub fn draw(&mut self, image: Option<(&ImageTexture, Transform)>, mut ui: UiFrame) {
         // Draining matters: epaint asserts that no delta is dropped unapplied. Deltas for one
         // texture apply in order: a full image, then patches to it.
         for (id, deltas) in ui.textures.set.drain() {
@@ -402,13 +398,13 @@ impl Renderer {
                     .update_texture(&self.device, &self.queue, id, delta);
             }
         }
-        self.paint(image, transform, &ui);
+        self.paint(image, &ui);
         for id in ui.textures.free.drain() {
             self.egui.free_texture(&id);
         }
     }
 
-    fn paint(&mut self, image: &ImageTexture, transform: Transform, ui: &UiFrame) {
+    fn paint(&mut self, image: Option<(&ImageTexture, Transform)>, ui: &UiFrame) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             // Present this one, then reconfigure so the next frame matches the surface again.
@@ -424,8 +420,10 @@ impl Renderer {
             _ => return,
         };
 
-        self.queue
-            .write_buffer(&self.uniforms, 0, &uniform_bytes(transform, &self.config));
+        if let Some((_, transform)) = image {
+            self.queue
+                .write_buffer(&self.uniforms, 0, &uniform_bytes(transform, &self.config));
+        }
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let screen = egui_wgpu::ScreenDescriptor {
@@ -453,14 +451,16 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&self.pipeline);
-            let frame_group = match self.magnification_filter {
-                MagnificationFilter::Linear => &self.linear_group,
-                MagnificationFilter::Nearest => &self.nearest_group,
-            };
-            pass.set_bind_group(0, frame_group, &[]);
-            pass.set_bind_group(1, &image.bind_group, &[]);
-            pass.draw(0..4, 0..1);
+            if let Some((image, _)) = image {
+                pass.set_pipeline(&self.pipeline);
+                let frame_group = match self.magnification_filter {
+                    MagnificationFilter::Linear => &self.linear_group,
+                    MagnificationFilter::Nearest => &self.nearest_group,
+                };
+                pass.set_bind_group(0, frame_group, &[]);
+                pass.set_bind_group(1, &image.bind_group, &[]);
+                pass.draw(0..4, 0..1);
+            }
             self.egui
                 .render(&mut pass.forget_lifetime(), &ui.primitives, &screen);
         }
@@ -560,8 +560,10 @@ fn mip_level_count([width, height]: [u32; 2]) -> u32 {
     u32::BITS - width.max(height).leading_zeros()
 }
 
-/// The full chain adds a third to the base level; rounding on odd sizes is ignored.
-fn texture_bytes([width, height]: [u32; 2]) -> u64 {
+/// GPU bytes of an image of `size` with its mip chain, before it is uploaded, so the preload cache
+/// can turn down a result without uploading it. The full chain adds a third to the base level;
+/// rounding on odd sizes is ignored.
+pub fn texture_bytes([width, height]: [u32; 2]) -> u64 {
     u64::from(width) * u64::from(height) * 4 * 4 / 3
 }
 
@@ -578,7 +580,8 @@ fn uniform_bytes(transform: Transform, config: &wgpu::SurfaceConfiguration) -> [
     bytes
 }
 
-/// A generated image until decoding exists: the checkerboard, or what `STAND_IN_VAR` selects.
+/// A generated image shown until the first image opens: the checkerboard, or what
+/// `STAND_IN_VAR` selects.
 pub fn stand_in() -> ([u32; 2], Vec<u8>) {
     let solid = |value| ([384, 256], [value, value, value, 255].repeat(384 * 256));
     match std::env::var(STAND_IN_VAR).as_deref() {

@@ -1,6 +1,6 @@
 # Keymap
 
-The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, rows arriving with their issues (so far fullscreen, zoom, pan, rotation, the magnification filter, and clicks, which navigation will act on). egui sees input first but keeps it only while one of its widgets has focus. Change both together.
+The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, rows arriving with their issues (so far next and previous, fullscreen, zoom, pan, rotation and the magnification filter). Until the advance limit lands (SSR-12), Space and Backspace step once per press and ignore key repeat. egui sees input first but keeps it only while one of its widgets has focus. Change both together.
 
 | Input | Command |
 | --- | --- |

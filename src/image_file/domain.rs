@@ -1,14 +1,6 @@
 //! What an image file is: its format, named by extension and confirmed by content, and the EXIF
 //! orientation its pixels are stored in.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "scaffold: decoding is called once the preload cache lands"
-    )
-)]
-
 use std::path::Path;
 
 /// The file formats the viewer opens, named by extension and confirmed by content.

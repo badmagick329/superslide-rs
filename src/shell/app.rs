@@ -1,10 +1,9 @@
 //! The winit `ApplicationHandler`: turns input into [`Command`]s, owns all state and runs commands.
 
-#![expect(dead_code, reason = "scaffold: most commands arrive with later issues")]
-
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -12,9 +11,13 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::browse::domain::ImageList;
+use crate::browse::domain::{Direction, ImageList};
 use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
 use crate::image_file::domain::Orientation;
+use crate::load::domain::preload::{PreloadCache, preload_window};
+use crate::load::domain::{DecodeError, Decoded};
+use crate::load::infrastructure::workers::Workers;
+use crate::load::presentation::error_card;
 use crate::notices::domain::Notices;
 use crate::notices::presentation::{self as notices, thousands};
 use crate::prefs::domain::Preferences;
@@ -27,10 +30,58 @@ use crate::view::domain::View;
 pub enum AppEvent {
     /// `generation` tells a superseded scan's late events from the current scan's.
     Scan { generation: u64, event: ScanEvent },
+    /// A decode worker finished `path`.
+    Decoded {
+        path: PathBuf,
+        result: Result<Decoded, DecodeError>,
+    },
 }
 
 /// Key of the notice that shows scan progress, then its result.
 const SCAN_NOTICE: &str = "scan";
+const LOADING_NOTICE: &str = "loading";
+/// Waits shorter than this pass without a notice: a flash of `Loading…` on every image change
+/// would be noise.
+const LOADING_DELAY: Duration = Duration::from_millis(150);
+
+/// One image in the preload cache. The texture is shared with [`Showing`], so evicting the image
+/// on screen does not free it mid-display.
+struct Cached {
+    texture: Rc<ImageTexture>,
+    orientation: Orientation,
+}
+
+/// What is on screen. It changes only once the current image is ready, so an image change never
+/// shows a blank frame.
+enum Showing {
+    Image {
+        /// `None` for the stand-in shown before the first image opens.
+        path: Option<PathBuf>,
+        texture: Rc<ImageTexture>,
+        view: View,
+    },
+    Error {
+        path: PathBuf,
+        file_name: String,
+        reason: String,
+    },
+}
+
+impl Showing {
+    fn path(&self) -> Option<&Path> {
+        match self {
+            Showing::Image { path, .. } => path.as_deref(),
+            Showing::Error { path, .. } => Some(path),
+        }
+    }
+}
+
+/// The current image has been wanted but not shown since `since`.
+struct Waiting {
+    since: Instant,
+    /// `Loading…` is up.
+    noticed: bool,
+}
 
 /// Window and GPU state exist from the first `resumed` on; Windows sends it once, at startup.
 pub struct App {
@@ -41,14 +92,20 @@ pub struct App {
     /// Dropping it cancels the scan.
     scan: Option<Scan>,
     scan_generation: u64,
-    images: Option<ImageList>,
 }
 
 struct Shown {
     window: Arc<Window>,
+    /// The last non-zero inner size: a minimised window reports 0 × 0, which no view can fit.
+    window_size: [u32; 2],
     renderer: Renderer,
-    image: ImageTexture,
-    view: View,
+    showing: Showing,
+    images: Option<ImageList>,
+    /// Which way the owner last moved; the preload window leans this way.
+    direction: Direction,
+    cache: PreloadCache<Cached>,
+    workers: Workers,
+    waiting: Option<Waiting>,
     egui: egui::Context,
     egui_input: egui_winit::State,
     notices: Notices,
@@ -69,7 +126,6 @@ impl App {
             open_at_start: (!paths.is_empty()).then_some(Open::Paths(paths)),
             scan: None,
             scan_generation: 0,
-            images: None,
         }
     }
 
@@ -123,7 +179,7 @@ impl App {
                     }
                     shown.notices.notify(text, now);
                 }
-                self.images = Some(list);
+                shown.opened(list, now);
             }
         }
         shown.window.request_redraw();
@@ -145,14 +201,17 @@ impl ApplicationHandler<AppEvent> for App {
             Err(e) => return fail(event_loop, &format!("Cannot start drawing: {e}")),
         };
         let (image_size, pixels) = render::stand_in();
-        let image = renderer.upload(image_size, &pixels);
+        let texture = Rc::new(renderer.upload(image_size, &pixels));
         let size = window.inner_size();
-        let view = View::new(
-            image.size(),
-            Orientation::Normal,
-            0,
-            [size.width, size.height],
-        );
+        let window_size = [size.width.max(1), size.height.max(1)];
+        let view = View::new(texture.size(), Orientation::Normal, 0, window_size);
+        let proxy = self.proxy.clone();
+        let workers = Workers::spawn(renderer.max_texture_dimension, move |path, result| {
+            // Fails only once the event loop has exited, when nobody wants the result.
+            let _ = proxy.send_event(AppEvent::Decoded { path, result });
+        });
+        // Preferences are not loaded yet; the default budget stands in.
+        let budget = u64::from(Preferences::default().preload_budget_mb) << 20;
         let egui = egui::Context::default();
         let egui_input = egui_winit::State::new(
             egui.clone(),
@@ -164,9 +223,18 @@ impl ApplicationHandler<AppEvent> for App {
         );
         self.shown = Some(Shown {
             window,
+            window_size,
             renderer,
-            image,
-            view,
+            showing: Showing::Image {
+                path: None,
+                texture,
+                view,
+            },
+            images: None,
+            direction: Direction::Forward,
+            cache: PreloadCache::new(budget),
+            workers,
+            waiting: None,
             egui,
             egui_input,
             notices: Notices::default(),
@@ -186,6 +254,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.scanned(event)
             }
             AppEvent::Scan { .. } => {}
+            AppEvent::Decoded { path, result } => {
+                if let Some(shown) = &mut self.shown {
+                    shown.decoded(path, result);
+                }
+            }
         }
     }
 
@@ -204,9 +277,12 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 shown.renderer.resize(size.width, size.height);
-                // A minimised window is 0 × 0; the view keeps its last real size.
+                // A minimised window is 0 × 0; views keep the last real size.
                 if size.width > 0 && size.height > 0 {
-                    shown.view.set_window([size.width, size.height]);
+                    shown.window_size = [size.width, size.height];
+                    if let Some(view) = shown.view() {
+                        view.set_window([size.width, size.height]);
+                    }
                 }
                 shown.window.request_redraw();
             }
@@ -244,15 +320,32 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    /// Sleeps until a notice starts fading or egui asks for a frame; redraws every frame while a
-    /// notice fades.
+    /// Sleeps until a notice starts fading, `Loading…` is due or egui asks for a frame; redraws
+    /// every frame while a notice fades.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(shown) = &self.shown else { return };
+        let Some(shown) = &mut self.shown else { return };
         let now = Instant::now();
-        let next = [shown.notices.next_change(now), shown.egui_repaint_at]
-            .into_iter()
-            .flatten()
-            .min();
+        if let Some(waiting) = &mut shown.waiting
+            && !waiting.noticed
+            && now >= waiting.since + LOADING_DELAY
+        {
+            waiting.noticed = true;
+            shown.notices.notify_as(LOADING_NOTICE, "Loading…", now);
+            shown.window.request_redraw();
+        }
+        let loading_at = shown
+            .waiting
+            .as_ref()
+            .filter(|waiting| !waiting.noticed)
+            .map(|waiting| waiting.since + LOADING_DELAY);
+        let next = [
+            shown.notices.next_change(now),
+            shown.egui_repaint_at,
+            loading_at,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         let flow = match next {
             Some(at) if at > now => ControlFlow::WaitUntil(at),
             Some(_) => {
@@ -266,13 +359,143 @@ impl ApplicationHandler<AppEvent> for App {
 }
 
 impl Shown {
+    fn view(&mut self) -> Option<&mut View> {
+        match &mut self.showing {
+            Showing::Image { view, .. } => Some(view),
+            Showing::Error { .. } => None,
+        }
+    }
+
+    /// A finished scan replaces the image list. Cached images it still holds are kept, at their
+    /// new positions.
+    fn opened(&mut self, list: ImageList, now: Instant) {
+        self.cache
+            .reindex(list.entries().iter().map(|entry| entry.path.as_path()));
+        self.images = Some(list);
+        self.direction = Direction::Forward;
+        self.retarget();
+        self.show_current(now);
+    }
+
+    fn navigate(&mut self, direction: Direction) {
+        let Some(images) = &mut self.images else {
+            return;
+        };
+        images.step(direction);
+        self.direction = direction;
+        self.retarget();
+        self.show_current(Instant::now());
+    }
+
+    /// Points the preload cache and the workers at the window around the current image.
+    fn retarget(&mut self) {
+        let Some(images) = &self.images else { return };
+        let entries = images.entries();
+        let window = preload_window(entries.len(), images.current_position(), self.direction)
+            .into_iter()
+            .map(|position| (position, entries[position].path.clone()))
+            .collect();
+        self.cache.retarget(entries.len(), window);
+        self.workers.request(self.cache.missing());
+    }
+
+    /// Swaps in the current image if it is ready; otherwise the previous one stays on screen and
+    /// the wait starts.
+    fn show_current(&mut self, now: Instant) {
+        let Some(path) = self
+            .images
+            .as_ref()
+            .and_then(ImageList::current)
+            .map(|entry| &entry.path)
+        else {
+            return;
+        };
+        if self.showing.path() == Some(path) {
+            return;
+        }
+        self.showing = match self.cache.get(path) {
+            None => {
+                self.waiting.get_or_insert(Waiting {
+                    since: now,
+                    noticed: false,
+                });
+                return;
+            }
+            Some(Ok(cached)) => Showing::Image {
+                path: Some(path.clone()),
+                texture: cached.texture.clone(),
+                // Screen rotation per path comes back with navigation (SSR-12).
+                view: View::new(
+                    cached.texture.size(),
+                    cached.orientation,
+                    0,
+                    self.window_size,
+                ),
+            },
+            Some(Err(error)) => Showing::Error {
+                path: path.clone(),
+                file_name: path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
+                reason: error.to_string(),
+            },
+        };
+        self.waiting = None;
+        self.notices.dismiss(LOADING_NOTICE);
+        self.window.request_redraw();
+    }
+
+    /// Uploads a decoded image if the cache will keep it; its CPU pixels are freed either way.
+    fn decoded(&mut self, path: PathBuf, result: Result<Decoded, DecodeError>) {
+        self.workers.finished(&path);
+        // Gone from the image list since it was requested: a newer open replaced it.
+        let Some(position) = self
+            .images
+            .as_ref()
+            .and_then(|images| images.position(&path))
+        else {
+            return;
+        };
+        let (bytes, loaded) = match result {
+            Ok(decoded) => {
+                let bytes = render::texture_bytes(decoded.size);
+                if !self.cache.keeps(&path, bytes) {
+                    return;
+                }
+                let texture = self.renderer.upload(decoded.size, &decoded.pixels);
+                let cached = Cached {
+                    texture: Rc::new(texture),
+                    orientation: decoded.orientation,
+                };
+                (bytes, Ok(cached))
+            }
+            Err(error) => (0, Err(error)),
+        };
+        self.cache.insert(path, position, bytes, loaded);
+        // Debug builds show stderr: this is how the budget is checked against Task Manager.
+        eprintln!(
+            "superslide: preload cache holds {} MB",
+            self.cache.used() >> 20
+        );
+        self.show_current(Instant::now());
+    }
+
     fn redraw(&mut self) {
         let now = Instant::now();
         let input = self.egui_input.take_egui_input(&self.window);
+        let showing = &self.showing;
         let shown_notices = &mut self.notices;
-        let output = self
-            .egui
-            .run_ui(input, |ui| notices::show(shown_notices, ui.ctx(), now));
+        let output = self.egui.run_ui(input, |ui| {
+            if let Showing::Error {
+                file_name, reason, ..
+            } = showing
+            {
+                error_card(ui.ctx(), file_name, reason);
+            }
+            notices::show(shown_notices, ui.ctx(), now);
+        });
         self.egui_input
             .handle_platform_output(&self.window, output.platform_output);
         // `Duration::MAX` means "no repaint needed"; adding it overflows to `None`.
@@ -285,7 +508,11 @@ impl Shown {
             textures: output.textures_delta,
             pixels_per_point: output.pixels_per_point,
         };
-        self.renderer.draw(&self.image, self.view.transform(), ui);
+        let image = match &self.showing {
+            Showing::Image { texture, view, .. } => Some((&**texture, view.transform())),
+            Showing::Error { .. } => None,
+        };
+        self.renderer.draw(image, ui);
     }
 
     fn run(&mut self, command: Option<Command>, event_loop: &ActiveEventLoop) {
@@ -300,10 +527,17 @@ impl Shown {
                 self.window.set_fullscreen(None)
             }
             Command::LeaveFullscreenOrQuit => event_loop.exit(),
-            Command::Pan(by) => self.view.pan(by),
-            Command::Zoom { factor, anchor } => self.view.zoom(factor, anchor),
-            Command::Fit => self.view.fit(),
-            Command::Rotate(turn) => self.view.rotate(turn),
+            // Shows the image itself once it is ready; nothing to redraw until then.
+            Command::Next => return self.navigate(Direction::Forward),
+            Command::Previous => return self.navigate(Direction::Backward),
+            // View commands do nothing on an error card.
+            Command::Pan(by) => self.view().into_iter().for_each(|view| view.pan(by)),
+            Command::Zoom { factor, anchor } => self
+                .view()
+                .into_iter()
+                .for_each(|view| view.zoom(factor, anchor)),
+            Command::Fit => self.view().into_iter().for_each(View::fit),
+            Command::Rotate(turn) => self.view().into_iter().for_each(|view| view.rotate(turn)),
             #[cfg(debug_assertions)]
             Command::TestNotice => self.notices.notify("Test notice", Instant::now()),
             Command::ToggleMagnificationFilter => {
