@@ -1,6 +1,6 @@
 # Architecture
 
-The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* describes SSR-15 as built and verified. *Files and persistence* and *Clipboard* are still the target for phases 2 and 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
+The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* and *Clipboard* describe SSR-15 and SSR-16 as built and verified. *Files and persistence* is still the target for phase 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
 
 ## Shape
 
@@ -18,20 +18,22 @@ The code is vertical slices, one folder per feature, each split into the layers 
 | [`notices`](../../src/notices/mod.rs) | domain, presentation | Notice timing and stacking in `domain`; egui drawing and count wording in `presentation`. |
 | [`prefs`](../../src/prefs/mod.rs) | domain | `Preferences` and their defaults. It holds other slices' domain types, such as the magnification filter. |
 | [`file_actions`](../../src/file_actions/mod.rs) | domain, infrastructure, presentation | Delete, move and copy: `Action` and `Failure` in `domain`; the file action thread and the no-overwrite filesystem calls in `infrastructure`; the notice wording in `presentation`. |
-| [`info_overlay`](../../src/info_overlay/mod.rs), [`clipboard`](../../src/clipboard/mod.rs) | domain, none | Scaffolds for SSR-17 and SSR-16. |
+| [`clipboard`](../../src/clipboard/mod.rs) | domain, infrastructure, presentation | Ctrl+C and Ctrl+V: the outcomes and the pasted-image check in `domain`; the clipboard thread and `arboard` calls in `infrastructure`, with `load`'s decoders handed in by `shell`; the notice wording in `presentation`. |
+| [`info_overlay`](../../src/info_overlay/mod.rs) | domain | Scaffold for SSR-17. |
 
 A layer that grows past one concern becomes a file with submodules beside it (`load/domain.rs` and `load/domain/preload.rs`), so paths still name the layer.
 
-[`main`](../../src/main.rs) reads command-line paths, builds the event loop and hands control to `shell::app`. Unit tests sit beside the code they test; every `domain` and the `browse`, `load` and `file_actions` infrastructure carry them, and none needs a window or GPU, so tests run headless.
+[`main`](../../src/main.rs) reads command-line paths, builds the event loop and hands control to `shell::app`. Unit tests sit beside the code they test; every `domain` and the `browse`, `load` and `file_actions` infrastructure carry them (the clipboard's `arboard` calls are checked by hand, as they need the real clipboard), and none needs a window or GPU, so tests run headless.
 
 ## Threads
 
-- **Main thread**: the winit event loop, all state, all wgpu calls, egui. Nothing on it blocks on decoding, scanning or file actions; the only blocking calls are the native file and folder dialogs, which are modal by nature.
+- **Main thread**: the winit event loop, all state, all wgpu calls, egui. Nothing on it blocks on decoding, scanning, file actions or the clipboard; the only blocking calls are the native file and folder dialogs, which are modal by nature.
 - **Decode workers**: `min(available_parallelism - 1, 4)` threads, at least 1, taking the highest-priority job from one shared queue (`Workers` in [workers.rs](../../src/load/infrastructure/workers.rs)). A decoder panic is caught and becomes that file's error, so a hostile file costs one image, not a worker. Dropping `Workers` stops them after their current decode.
 - **Scan thread**: one per open, walking the filesystem; sends the finished, sorted image list back, plus progress counts for a notice. Dropping the `Scan` handle ([browse/infrastructure.rs](../../src/browse/infrastructure.rs)) cancels it, and the app tags each scan's events with a generation number, so a newer open replaces an older one and its late events are ignored.
 - **File action thread**: one, running delete, move and copy in the order asked (`FileActions` in [file_actions/infrastructure.rs](../../src/file_actions/infrastructure.rs)). A Recycle Bin call or a copy to a slow drive can take seconds. Dropping `FileActions` waits for the queue to finish, so closing the window mid-copy never leaves half a file.
+- **Clipboard thread**: one, running Ctrl+C and Ctrl+V in the order asked, so a paste after a copy reads that copy (`ClipboardThread` in [clipboard/infrastructure.rs](../../src/clipboard/infrastructure.rs)). Dropping it waits for a copy in progress.
 
-Workers, the scan thread and the file action thread send `AppEvent`s ([app.rs](../../src/shell/app.rs)) through the event loop's `EventLoopProxy`, which also wakes the loop. GPU upload happens on the main thread when the result arrives, and the CPU pixels are dropped right after.
+Workers, the scan thread, the file action thread and the clipboard thread send `AppEvent`s ([app.rs](../../src/shell/app.rs)) through the event loop's `EventLoopProxy`, which also wakes the loop. GPU upload happens on the main thread when the result arrives, and the CPU pixels are dropped right after.
 
 ## Image change
 
@@ -53,7 +55,7 @@ The policy is [preload.rs](../../src/load/domain/preload.rs), generic over what 
 - Debug builds log the cache's size to stderr after each result.
 - Measured on an RTX 3070, debug build, 200 JPEGs of 6000 × 4000 (122 MB of texture each): paging forward and backward at 2 presses a second for a minute, every image was on screen within 50 ms of the key, except one cold image just after starting backwards. The cache held 976 MB throughout; Task Manager's dedicated GPU memory stayed flat at about 1.5 GB, which is 274 MB for the app with no image, the cache, and wgpu allocator and staging slack.
 - Measured on the same PC, release build, the SSR-14 set (30 JPEGs of 8660 × 5773, 267 MB of texture each, so the preload window alone is past the budget): 60 presses of Space about 0.75 s apart, two laps with wraps, every image on screen within 50 ms of the key; dedicated GPU memory flat at 1.67 GB.
-- Ctrl+C (SSR-16) will re-decode the file rather than use the cache; see *Clipboard*.
+- Ctrl+C re-decodes the file rather than use the cache; see *Clipboard*.
 
 ## Decoding
 
@@ -64,7 +66,7 @@ Built in the `load` slice: [infrastructure.rs](../../src/load/infrastructure.rs)
 - `DecodeError` is `Io`, `Unsupported` (misnamed, too large) or `Corrupt` (empty, wrong content, damaged, cut short); its `Display` is the error card's one line.
 - Images over 2^28 pixels (1 GiB as RGBA) are refused from the header, before any pixel buffer exists. zune-jpeg's own 16384 px per side cap is lifted; `image`'s 512 MiB allocation cap is raised to match.
 - A cut-short JPEG is an error, not a grey-filled image. zune-jpeg's lenient mode reports success on those and its strict mode also rejects stray bytes some cameras write, so decoding stays lenient and `scan_is_complete` checks for an EOI after the first top-level SOS, skipping segments by length because an EXIF thumbnail carries its own SOS and EOI.
-- EXIF orientation is read (JPEG only, `kamadak-exif`) and returned beside the pixels; missing or invalid tags mean `Normal`. The display path never rotates pixels on the CPU (only Ctrl+C does, see *Clipboard*).
+- EXIF orientation is read (JPEG only, `kamadak-exif`) and returned beside the pixels; missing or invalid tags mean `Normal`. The display path never rotates pixels on the CPU (only Ctrl+C does, see *Clipboard*). `shrink_to_fit` is also how a pasted image is brought within the texture limit.
 - An image whose width or height exceeds `max_dim` (the device's `max_texture_dimension_2d`, read once at startup) is downscaled, keeping aspect, with `fast_image_resize` (Lanczos3, alpha premultiplied); the long side lands on `max_dim` exactly.
 - Measured on the owner's PC, release build: an 18.7 MB, 8660 × 5773 (50 MP) JPEG in 400 ms.
 - The orientation fixtures in `tests/fixtures/` are 8 × 4 JPEGs, left half red, written by Windows GDI+, so the EXIF they carry comes from a writer independent of the decoder.
@@ -157,12 +159,18 @@ Delete, M and C act on the image on screen, error cards included, even while the
 - Copies keep the original's modified time, so date sort places them alike.
 - Every outcome shows a notice naming the file and the target folder's name (not its full path, which wraps over several lines). A held key acts once, and a second press on an image whose action is still running is ignored.
 - After a delete or move, `ImageList::remove` takes the image out and `PreloadCache::reindex` drops it from the cache. If it was current, the next image becomes current (wrapping from the last to the first, with the wrap notice) and shows at once when preloaded: the next image is always in the preload window. Removing the last image leaves an empty view (`Showing::Nothing`), the bare window title and `No images left`.
-- The stand-in has no file, so file actions on it show `This image is not a file`; the clipboard image (SSR-16) will too.
+- The stand-in and the clipboard image have no file, so file actions on them show `This image is not a file`.
 - Measured on an RTX 3070, release build, 50 MP JPEGs: Delete to the next image on screen 109–126 ms, all of it the Recycle Bin call; a move within a drive and one from C: to D: (17 MB, copied and flushed) put the next image up 315 and 428 ms after the picker closed, with no `Loading…`. A deleted image restored from the Recycle Bin to its folder byte-identical. A move of a 17 MB image onto a 16 MB virtual drive with 6 MB free failed with `There is not enough space on the disk`, left the original byte-identical and left no partial file.
 
 ## Clipboard
 
-Ctrl+V shows the clipboard image in place of the current image without adding it to the image list; file actions and Ctrl+C are disabled on it, and the next navigation returns to the image list where it left off. Ctrl+C on a file re-decodes it, applies EXIF orientation and screen rotation on the CPU so the copy matches the screen, and puts the RGBA pixels on the clipboard.
+`Shown::copy` and `Shown::clipboard_done` in [app.rs](../../src/shell/app.rs) drive it; the work runs on the clipboard thread ([clipboard/infrastructure.rs](../../src/clipboard/infrastructure.rs)).
+
+- Ctrl+C acts on the image on screen, error cards included. It re-decodes the file at full size, since the cache holds GPU textures, possibly downscaled, and no CPU pixels. `view::domain::upright_pixels` then turns the pixels by EXIF orientation and screen rotation, using the same unit map as the view, so the copy cannot drift from the screen; a unit test checks every orientation and rotation against the view transform. `arboard` puts it on the clipboard as PNG and as a bitmap. `Copying <name>…` shows at once and is replaced by the result.
+- Ctrl+V reads the clipboard image (PNG first, as screenshots carry it, else bitmap) and checks it like a file: within `MAX_PIXELS`, and the buffer exactly width × height RGBA (`clipboard::domain::check_pasted`). It is shrunk to the texture limit like a decoded file, then shown in place of the current image, outside the image list, titled `Clipboard image`.
+- While it shows (`Shown::pasted`), decodes finishing do not replace it. The next navigation, slideshow step or group jump returns to the image list's current image, the one it covered, rather than stepping past it. An open replaces it. A Delete or move finishing meanwhile still updates the image list, and an emptied list leaves the clipboard image on screen.
+- On the clipboard image, file actions show `This image is not a file` and Ctrl+C shows `This image is already on the clipboard`. An empty or text-only clipboard gives `No image on the clipboard`.
+- Measured on an RTX 3070, release build: a JPEG with EXIF orientation 6, turned once with R and copied, pasted into Paint 400 × 200 with its four quadrant colours where the screen showed them. A 50 MP JPEG (8660 × 5773) reached the clipboard 1.35 s after Ctrl+C, the PNG encode being most of it; the app's peak working set was 883 MB, preload cache included. An image put on the clipboard as Win+Shift+S does (PNG plus bitmap) pasted and showed; Space returned to the image it covered; Delete and Ctrl+C on it changed no file and showed their notices.
 
 ## Preference defaults
 

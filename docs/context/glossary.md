@@ -5,7 +5,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Term | Meaning | Avoid | In code |
 | --- | --- | --- | --- |
 | Advance limit | The shortest interval between image changes while Space or Backspace is held. | fast-forward, fast-back | `AdvanceLimit` |
-| Clipboard image | An image pasted with Ctrl+V, shown in place of the current image but outside the image list; file actions are disabled on it. | | |
+| Clipboard image | An image pasted with Ctrl+V, shown in place of the current image but outside the image list; file actions and Ctrl+C are disabled on it. | pasted image | `Showing::Image` with no path while `Shown::pasted` is set |
 | Current image | The image on screen, one position in the image list. | current slide | |
 | Error card | What is drawn in place of an image that failed to decode: the file name and a one-line reason. | | `load::presentation::error_card` |
 | File action | Delete to the Recycle Bin (Delete), move (M) or copy (C) of the current image's file; the only writes the viewer makes to image files. | | `file_actions::domain::Action` |

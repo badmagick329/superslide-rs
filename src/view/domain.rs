@@ -155,13 +155,8 @@ impl View {
         }
     }
 
-    /// Orientation, then screen rotation: the unit map from stored to on-screen directions.
     fn unit(&self) -> Mat2 {
-        let mut m = orientation_matrix(self.orientation);
-        for _ in 0..self.turns {
-            m = Mat2::CLOCKWISE.mul(m);
-        }
-        m
+        unit(self.orientation, self.turns)
     }
 
     /// Image size as it stands on screen, before scaling: width and height swap when the unit
@@ -240,6 +235,41 @@ impl View {
         let at = self.clamped(self.image_centre_on_screen());
         self.put_image_centre(at);
     }
+}
+
+/// Stored RGBA pixels turned the way the screen shows them, for Ctrl+C. Built on the same unit
+/// map as the view, so the copy cannot drift from what is on screen.
+pub fn upright_pixels(
+    size: [u32; 2],
+    pixels: &[u8],
+    orientation: Orientation,
+    turns: u8,
+) -> ([u32; 2], Vec<u8>) {
+    let m = unit(orientation, turns).0.map(|row| row.map(|v| v as i64));
+    let [w, h] = size.map(i64::from);
+    let [uw, uh] = if m[0][0] == 0 { [h, w] } else { [w, h] };
+    let mut out = Vec::with_capacity(pixels.len());
+    for dy in 0..uh {
+        for dx in 0..uw {
+            // Pixel centres in doubled coordinates about the image centre stay integers. The
+            // transpose inverts a signed permutation, mapping the screen pixel back to storage.
+            let c = [2 * dx + 1 - uw, 2 * dy + 1 - uh];
+            let sx = (m[0][0] * c[0] + m[1][0] * c[1] + w - 1) / 2;
+            let sy = (m[0][1] * c[0] + m[1][1] * c[1] + h - 1) / 2;
+            let i = ((sy * w + sx) * 4) as usize;
+            out.extend_from_slice(&pixels[i..i + 4]);
+        }
+    }
+    ([uw as u32, uh as u32], out)
+}
+
+/// Orientation, then screen rotation: the unit map from stored to on-screen directions.
+fn unit(orientation: Orientation, turns: u8) -> Mat2 {
+    let mut m = orientation_matrix(orientation);
+    for _ in 0..turns % 4 {
+        m = Mat2::CLOCKWISE.mul(m);
+    }
+    m
 }
 
 /// How EXIF orientation turns stored pixels upright, in y-down coordinates.
@@ -333,6 +363,45 @@ mod tests {
         let det = a * d - b * c;
         let (x, y) = (p[0] - t.offset[0], p[1] - t.offset[1]);
         [(d * x - b * y) / det, (a * y - c * x) / det]
+    }
+
+    /// Every stored pixel of the copy sits where the view draws it, for every orientation and
+    /// screen rotation.
+    #[test]
+    fn upright_pixels_match_the_screen() {
+        use Orientation::*;
+        let stored = [3, 2];
+        // Each pixel holds its own index, so a misplaced one is caught.
+        let pixels: Vec<u8> = (0..6).flat_map(|i| [i, 0, 0, 255]).collect();
+        let all = [
+            Normal,
+            MirrorHorizontal,
+            Rotate180,
+            MirrorVertical,
+            Transpose,
+            Rotate90,
+            Transverse,
+            Rotate270,
+        ];
+        for orientation in all {
+            for turns in 0..4 {
+                let (upright, out) = upright_pixels(stored, &pixels, orientation, turns);
+                let view = View::new(stored, orientation, turns, [600, 600]);
+                let [x0, y0, ..] = rect(&view);
+                let scale = size(&view)[0] / upright[0] as f32;
+                for (i, (sx, sy)) in (0..2).flat_map(|y| (0..3).map(move |x| (x, y))).enumerate() {
+                    let local = [(sx as f32 + 0.5) / 3.0 - 0.5, (sy as f32 + 0.5) / 2.0 - 0.5];
+                    let [px, py] = on_screen(view.transform(), local);
+                    let dx = ((px - x0) / scale) as u32;
+                    let dy = ((py - y0) / scale) as u32;
+                    let at = ((dy * upright[0] + dx) * 4) as usize;
+                    assert_eq!(
+                        out[at] as usize, i,
+                        "{orientation:?}, {turns} turns: stored ({sx}, {sy})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

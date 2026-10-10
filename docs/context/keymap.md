@@ -1,6 +1,6 @@
 # Keymap
 
-The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, rows arriving with their issues. Every row works except I (SSR-17), Ctrl+C / Ctrl+V (SSR-16) and P (SSR-18). egui sees input first but keeps it only while one of its widgets has focus. Change both together.
+The v1 bindings; [keymap.rs](../../src/shell/keymap.rs) implements exactly this table, rows arriving with their issues. Every row works except I (SSR-17) and P (SSR-18). egui sees input first but keeps it only while one of its widgets has focus. Change both together.
 
 | Input | Command |
 | --- | --- |

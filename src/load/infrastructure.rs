@@ -38,12 +38,7 @@ fn decode_bytes(data: &[u8], format: Format, max_dim: u32) -> Result<Decoded, De
         Format::Jpeg => jpeg_orientation(data),
         _ => Orientation::Normal,
     };
-    let size = fit_within(original_size, max_dim);
-    let pixels = if size == original_size {
-        pixels
-    } else {
-        downscale(original_size, pixels, size)
-    };
+    let (size, pixels) = shrink_to_fit(original_size, pixels, max_dim);
     Ok(Decoded {
         size,
         original_size,
@@ -145,6 +140,16 @@ fn image_error(error: ImageError) -> DecodeError {
         ImageError::Unsupported(e) => DecodeError::Unsupported(format!("Cannot open: {e}")),
         e => DecodeError::damaged(e),
     }
+}
+
+/// RGBA pixels shrunk, keeping aspect, so neither side exceeds `max_dim`; returned as they are
+/// when they already fit.
+pub fn shrink_to_fit(size: [u32; 2], pixels: Vec<u8>, max_dim: u32) -> ([u32; 2], Vec<u8>) {
+    let fitted = fit_within(size, max_dim);
+    if fitted == size {
+        return (size, pixels);
+    }
+    (fitted, downscale(size, pixels, fitted))
 }
 
 fn downscale(from: [u32; 2], pixels: Vec<u8>, to: [u32; 2]) -> Vec<u8> {

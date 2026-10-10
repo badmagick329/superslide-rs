@@ -65,6 +65,8 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
                 "f" | "F" if ctrl && !modifiers.alt_key() => {
                     (Command::ToggleMagnificationFilter, false)
                 }
+                "c" | "C" if ctrl && !modifiers.alt_key() => (Command::CopyToClipboard, false),
+                "v" | "V" if ctrl && !modifiers.alt_key() => (Command::PasteFromClipboard, false),
                 _ if !plain => return None,
                 "0" => (Command::Fit, false),
                 "r" | "R" => (Command::Rotate(Turn::Right), false),
@@ -297,10 +299,16 @@ mod tests {
         // Ctrl+R and Ctrl+arrows belong to other bindings, not rotate and pan; Ctrl+C is the
         // clipboard, not a copy to a folder.
         assert_eq!(for_key(&Key::Character("r".into()), ctrl, false), None);
-        assert_ne!(
+        assert_eq!(
             for_key(&Key::Character("c".into()), ctrl, false),
-            Some(Command::Transfer(Transfer::Copy))
+            Some(Command::CopyToClipboard)
         );
+        assert_eq!(
+            for_key(&Key::Character("v".into()), ctrl, false),
+            Some(Command::PasteFromClipboard)
+        );
+        // A held Ctrl+V pastes once, not once per key repeat.
+        assert_eq!(for_key(&Key::Character("v".into()), ctrl, true), None);
         assert_eq!(
             for_key(&Key::Named(NamedKey::ArrowLeft), ctrl, false),
             Some(Command::JumpGroup(Direction::Backward))

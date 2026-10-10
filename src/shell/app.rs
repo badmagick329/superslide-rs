@@ -17,6 +17,8 @@ use crate::browse::domain::slideshow::Slideshow;
 use crate::browse::domain::{Direction, ImageList, Order, SortMode, folder};
 use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
 use crate::browse::presentation::describe;
+use crate::clipboard::infrastructure::{ClipboardThread, Done, Loading, Request};
+use crate::clipboard::presentation as clipboard;
 use crate::file_actions::domain::{Action, Failure, Transfer};
 use crate::file_actions::infrastructure::FileActions;
 use crate::file_actions::presentation as file_actions;
@@ -24,6 +26,7 @@ use crate::image_file::domain::{Format, Orientation};
 use crate::load::domain::preload::{PreloadCache, preload_window};
 use crate::load::domain::{DecodeError, Decoded};
 use crate::load::infrastructure::workers::Workers;
+use crate::load::infrastructure::{decode, shrink_to_fit};
 use crate::load::presentation::error_card;
 use crate::notices::domain::Notices;
 use crate::notices::presentation::{self as notices, thousands};
@@ -48,6 +51,8 @@ pub enum AppEvent {
         action: Action,
         result: Result<(), Failure>,
     },
+    /// The clipboard thread finished a copy or a paste.
+    Clipboard(Done),
 }
 
 /// Key of the notice that shows scan progress, then its result.
@@ -56,6 +61,8 @@ const LOADING_NOTICE: &str = "loading";
 /// Key of the notice naming the image list's order, so pressing sort keys in a row replaces it.
 const ORDER_NOTICE: &str = "order";
 const SLIDESHOW_NOTICE: &str = "slideshow";
+/// Key of the notice for Ctrl+C and Ctrl+V, so `Copying…` is replaced by its result.
+const CLIPBOARD_NOTICE: &str = "clipboard";
 const NOT_A_FILE: &str = "This image is not a file";
 const TITLE: &str = "SuperSlide-RS";
 /// Waits shorter than this pass without a notice: a flash of `Loading…` on every image change
@@ -73,7 +80,8 @@ struct Cached {
 /// shows a blank frame.
 enum Showing {
     Image {
-        /// `None` for the stand-in shown before the first image opens.
+        /// `None` for the stand-in shown before the first image opens, and for the clipboard
+        /// image.
         path: Option<PathBuf>,
         texture: Rc<ImageTexture>,
         view: View,
@@ -139,6 +147,10 @@ struct Shown {
     acting_on: HashSet<PathBuf>,
     /// Where M and C last sent an image; their folder picker opens there. Until the app closes.
     target_folder: Option<PathBuf>,
+    clipboard: ClipboardThread,
+    /// The clipboard image holds the screen: a decode finishing does not replace it, and the next
+    /// navigation goes back to the image list's current image rather than stepping past it.
+    pasted: bool,
     waiting: Option<Waiting>,
     egui: egui::Context,
     egui_input: egui_winit::State,
@@ -267,6 +279,16 @@ impl ApplicationHandler<AppEvent> for App {
                 result,
             });
         });
+        let proxy = self.proxy.clone();
+        let loading = Loading {
+            decode,
+            shrink_to_fit,
+            max_texture_dimension: renderer.max_texture_dimension,
+        };
+        let clipboard = ClipboardThread::spawn(loading, move |done| {
+            // Fails only once the event loop has exited, when nobody wants the result.
+            let _ = proxy.send_event(AppEvent::Clipboard(done));
+        });
         // Preferences are not loaded yet; the defaults stand in.
         let preferences = Preferences::default();
         let budget = u64::from(preferences.preload_budget_mb) << 20;
@@ -300,6 +322,8 @@ impl ApplicationHandler<AppEvent> for App {
             file_actions,
             acting_on: HashSet::new(),
             target_folder: None,
+            clipboard,
+            pasted: false,
             waiting: None,
             egui,
             egui_input,
@@ -332,6 +356,11 @@ impl ApplicationHandler<AppEvent> for App {
             } => {
                 if let Some(shown) = &mut self.shown {
                     shown.acted(path, action, result);
+                }
+            }
+            AppEvent::Clipboard(done) => {
+                if let Some(shown) = &mut self.shown {
+                    shown.clipboard_done(done);
                 }
             }
         }
@@ -478,6 +507,8 @@ impl Shown {
         self.cache
             .reindex(list.entries().iter().map(|entry| entry.path.as_path()));
         self.images = Some(list);
+        // An open is explicit, so it replaces the clipboard image too.
+        self.pasted = false;
         self.direction = Direction::Forward;
         self.retarget();
         self.show_current(now);
@@ -487,12 +518,18 @@ impl Shown {
         let Some(images) = &mut self.images else {
             return;
         };
+        if self.pasted {
+            return self.leave_clipboard(direction);
+        }
         let wrapped = images.step(direction);
         self.moved(direction, wrapped);
     }
 
     /// Does nothing unless grouped by subfolder.
     fn jump_group(&mut self, direction: Direction) {
+        if self.pasted && self.images.is_some() {
+            return self.leave_clipboard(direction);
+        }
         let Some(wrapped) = self
             .images
             .as_mut()
@@ -519,6 +556,12 @@ impl Shown {
         self.direction = direction;
         self.retarget();
         self.show_current(now);
+    }
+
+    /// Back to the image list's current image, the one the clipboard image covered.
+    fn leave_clipboard(&mut self, direction: Direction) {
+        self.pasted = false;
+        self.moved(direction, false);
     }
 
     /// Re-sorts in memory; the current image stays current, so nothing on screen changes but the
@@ -582,6 +625,9 @@ impl Shown {
     /// Swaps in the current image if it is ready; otherwise the previous one stays on screen and
     /// the wait starts.
     fn show_current(&mut self, now: Instant) {
+        if self.pasted {
+            return;
+        }
         let Some(path) = self
             .images
             .as_ref()
@@ -668,7 +714,7 @@ impl Shown {
             Showing::Nothing => return,
             showing => showing.path().map(Path::to_path_buf),
         };
-        // The stand-in, and from SSR-16 the clipboard image, exist only in memory.
+        // The stand-in and the clipboard image exist only in memory.
         let Some(path) = path else {
             self.notices.notify(NOT_A_FILE, Instant::now());
             return self.window.request_redraw();
@@ -734,11 +780,14 @@ impl Shown {
                 self.notices
                     .notify_as(SLIDESHOW_NOTICE, "Slideshow off", now);
             }
-            self.showing = Showing::Nothing;
             self.waiting = None;
             self.notices.dismiss(LOADING_NOTICE);
             self.notices.notify("No images left", now);
-            self.window.set_title(TITLE);
+            // The clipboard image stays: it was never in the image list.
+            if !self.pasted {
+                self.showing = Showing::Nothing;
+                self.window.set_title(TITLE);
+            }
             return;
         }
         if removed.was_current {
@@ -747,6 +796,69 @@ impl Shown {
         } else {
             self.retarget();
         }
+    }
+
+    /// Ctrl+C: the image on screen, turned as shown, onto the clipboard. An error card's file is
+    /// tried again, so its notice says why it cannot be copied.
+    fn copy(&mut self) {
+        let now = Instant::now();
+        let (path, turns) = match &self.showing {
+            Showing::Nothing => return,
+            Showing::Image { .. } if self.pasted => {
+                self.notices.notify_as(
+                    CLIPBOARD_NOTICE,
+                    "This image is already on the clipboard",
+                    now,
+                );
+                return self.window.request_redraw();
+            }
+            Showing::Image { path: None, .. } => {
+                self.notices.notify(NOT_A_FILE, now);
+                return self.window.request_redraw();
+            }
+            Showing::Image {
+                path: Some(path),
+                view,
+                ..
+            } => (path.clone(), view.turns()),
+            Showing::Error { path, .. } => {
+                (path.clone(), self.turns.get(path).copied().unwrap_or(0))
+            }
+        };
+        let text = format!("Copying {}…", file_name(&path));
+        self.notices.notify_as(CLIPBOARD_NOTICE, text, now);
+        self.window.request_redraw();
+        self.clipboard.request(Request::Copy { path, turns });
+    }
+
+    fn clipboard_done(&mut self, done: Done) {
+        let now = Instant::now();
+        self.window.request_redraw();
+        let decoded = match done {
+            Done::Copied { path, result } => {
+                let text = clipboard::copied(&file_name(&path), &result);
+                return self.notices.notify_as(CLIPBOARD_NOTICE, text, now);
+            }
+            Done::Pasted(Err(failure)) => {
+                let text = clipboard::paste_failed(&failure);
+                return self.notices.notify_as(CLIPBOARD_NOTICE, text, now);
+            }
+            Done::Pasted(Ok(decoded)) => decoded,
+        };
+        let texture = Rc::new(self.renderer.upload(decoded.size, &decoded.pixels));
+        self.showing = Showing::Image {
+            path: None,
+            view: View::new(texture.size(), Orientation::Normal, 0, self.window_size),
+            texture,
+        };
+        self.pasted = true;
+        // Covers any image still loading; leaving the clipboard image starts the wait afresh.
+        self.waiting = None;
+        self.notices.dismiss(LOADING_NOTICE);
+        self.notices
+            .notify_as(CLIPBOARD_NOTICE, "Clipboard image", now);
+        self.window.set_title(&format!("Clipboard image — {TITLE}"));
+        self.slideshow.restart(now);
     }
 
     fn redraw(&mut self) {
@@ -807,6 +919,8 @@ impl Shown {
             Command::JumpGroup(direction) => return self.jump_group(direction),
             Command::DeleteToRecycleBin => return self.act(None),
             Command::Transfer(transfer) => return self.act(Some(transfer)),
+            Command::CopyToClipboard => return self.copy(),
+            Command::PasteFromClipboard => return self.clipboard.request(Request::Paste),
             // Without an image list there is nothing to show; opening one would stop it anyway.
             Command::ToggleSlideshow if self.images.is_some() => {
                 let now = Instant::now();
