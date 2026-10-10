@@ -1,6 +1,29 @@
-//! The view transform: fit, zoom, pan, screen rotation and EXIF orientation. Pure math, no GPU.
+//! The view transform: fit, zoom, pan, screen rotation and EXIF orientation, and how pixels are
+//! sampled. Pure math, no GPU.
 
-use crate::decode::Orientation;
+use serde::{Deserialize, Serialize};
+
+use crate::image_file::domain::Orientation;
+
+/// Sampling when zoomed past native size. Minification always stays mipmapped linear, so a shrunk
+/// image never aliases whichever filter is chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MagnificationFilter {
+    #[default]
+    Linear,
+    /// Sharp pixels at high zoom.
+    Nearest,
+}
+
+impl MagnificationFilter {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Linear => Self::Nearest,
+            Self::Nearest => Self::Linear,
+        }
+    }
+}
 
 /// One quarter-turn of screen rotation; R turns right (clockwise), L left.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

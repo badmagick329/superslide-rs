@@ -4,8 +4,8 @@
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::app::Command;
-use crate::view::{Anchor, PanBy, Turn};
+use crate::shell::command::Command;
+use crate::view::domain::{Anchor, PanBy, Turn};
 
 /// Zoom per wheel notch and per + / - press.
 const ZOOM_STEP: f32 = 1.25;

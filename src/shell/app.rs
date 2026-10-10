@@ -12,55 +12,16 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::decode::Orientation;
-use crate::files::Transfer;
-use crate::keymap;
-use crate::library::{Direction, Found, ImageList, Open, Scan, ScanEvent, SortKey};
-use crate::prefs::Preferences;
-use crate::render::{ImageTexture, Renderer, UiFrame};
-use crate::ui::{Notices, thousands};
-use crate::view::{Anchor, PanBy, Turn, View};
-
-/// Everything the owner can ask for. Every row of `docs/context/keymap.md` maps to a variant;
-/// rows that differ only by a parameter (R / L, M / C) share one.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Command {
-    Next,
-    Previous,
-    /// First image of the adjacent group; does nothing unless grouped by subfolder.
-    JumpGroup(Direction),
-    ToggleSlideshow,
-    Pan(PanBy),
-    /// Multiplies the zoom by `factor`. Wheel, right drag, + / - and Ctrl+ / Ctrl- differ only in
-    /// factor and anchor.
-    Zoom {
-        factor: f32,
-        anchor: Anchor,
-    },
-    Fit,
-    Rotate(Turn),
-    ToggleMagnificationFilter,
-    CycleInfoOverlay,
-    ToggleFullscreen,
-    /// Esc: leaves fullscreen, or quits when windowed.
-    LeaveFullscreenOrQuit,
-    Sort(SortKey),
-    /// Gives a new random order even when already shuffled.
-    Shuffle,
-    ReverseSort,
-    ToggleGrouping,
-    Open {
-        recursive: bool,
-    },
-    DeleteToRecycleBin,
-    Transfer(Transfer),
-    CopyToClipboard,
-    PasteFromClipboard,
-    TogglePreferences,
-    /// F9 in debug builds: a fixed notice, for checking notice timing and stacking by hand.
-    #[cfg(debug_assertions)]
-    TestNotice,
-}
+use crate::browse::domain::ImageList;
+use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
+use crate::image_file::domain::Orientation;
+use crate::notices::domain::Notices;
+use crate::notices::presentation::{self as notices, thousands};
+use crate::prefs::domain::Preferences;
+use crate::shell::command::Command;
+use crate::shell::keymap;
+use crate::shell::render::{self, ImageTexture, Renderer, UiFrame};
+use crate::view::domain::View;
 
 /// Sent to the event loop from other threads through its proxy.
 pub enum AppEvent {
@@ -183,7 +144,7 @@ impl ApplicationHandler<AppEvent> for App {
             Ok(renderer) => renderer,
             Err(e) => return fail(event_loop, &format!("Cannot start drawing: {e}")),
         };
-        let (image_size, pixels) = crate::render::stand_in();
+        let (image_size, pixels) = render::stand_in();
         let image = renderer.upload(image_size, &pixels);
         let size = window.inner_size();
         let view = View::new(
@@ -308,8 +269,10 @@ impl Shown {
     fn redraw(&mut self) {
         let now = Instant::now();
         let input = self.egui_input.take_egui_input(&self.window);
-        let notices = &mut self.notices;
-        let output = self.egui.run_ui(input, |ui| notices.show(ui.ctx(), now));
+        let shown_notices = &mut self.notices;
+        let output = self
+            .egui
+            .run_ui(input, |ui| notices::show(shown_notices, ui.ctx(), now));
         self.egui_input
             .handle_platform_output(&self.window, output.platform_output);
         // `Duration::MAX` means "no repaint needed"; adding it overflows to `None`.

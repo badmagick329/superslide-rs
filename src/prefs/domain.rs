@@ -1,4 +1,4 @@
-//! `Preferences` and `Session`: defaults, TOML load and atomic save beside the executable.
+//! `Preferences` and their defaults. `Session` and the TOML file arrive with SSR-18 and SSR-19.
 
 #![expect(
     dead_code,
@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::render::MagnificationFilter;
+use crate::view::domain::MagnificationFilter;
 
 /// The owner's persisted options. Defaults follow *Preference defaults* in
 /// `docs/context/architecture.md`.

@@ -1,13 +1,13 @@
-//! Turns a path into RGBA pixels plus their EXIF orientation: format dispatch, orientation read,
-//! oversize downscale. Orientation is applied at draw time, never to the pixels here.
+//! Decoding with the third-party decoders: zune-jpeg for JPEG, `image` for the rest, kamadak-exif
+//! for orientation and fast_image_resize for the oversize downscale. Their output is checked
+//! against `load::domain`'s rules before it is trusted.
 
 #![cfg_attr(
     not(test),
     expect(dead_code, reason = "scaffold: workers arrive with the preload cache")
 )]
 
-use std::fmt;
-use std::io::{self, Cursor};
+use std::io::Cursor;
 use std::path::Path;
 
 use fast_image_resize::{PixelType, Resizer, images::Image};
@@ -17,120 +17,8 @@ use zune_jpeg::zune_core::bytestream::ZCursor;
 use zune_jpeg::zune_core::colorspace::ColorSpace;
 use zune_jpeg::zune_core::options::DecoderOptions;
 
-/// Larger images are refused before any pixel buffer exists: a few kilobytes of JPEG can claim
-/// 65535 × 65535, which is 17 GB as RGBA. 2^28 pixels is 1 GiB as RGBA, and still takes a
-/// 30000 × 8000 panorama.
-const MAX_PIXELS: u64 = 1 << 28;
-
-/// The file formats the viewer opens, named by extension and confirmed by content.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format {
-    Jpeg,
-    Png,
-    Tga,
-    Bmp,
-}
-
-impl Format {
-    /// From the extension, case-insensitive; `None` for anything else. This is what makes a file
-    /// an image to the scan.
-    pub fn from_path(path: &Path) -> Option<Self> {
-        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-        Some(match extension.as_str() {
-            "jpg" | "jpeg" => Format::Jpeg,
-            "png" => Format::Png,
-            "tga" => Format::Tga,
-            "bmp" => Format::Bmp,
-            _ => return None,
-        })
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Format::Jpeg => "JPEG",
-            Format::Png => "PNG",
-            Format::Tga => "TGA",
-            Format::Bmp => "BMP",
-        }
-    }
-
-    /// From the leading signature. TGA has none, so it is never found this way.
-    fn sniff(data: &[u8]) -> Option<Self> {
-        if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
-            Some(Format::Jpeg)
-        } else if data.starts_with(b"\x89PNG\r\n\x1a\n") {
-            Some(Format::Png)
-        } else if data.starts_with(b"BM") {
-            Some(Format::Bmp)
-        } else {
-            None
-        }
-    }
-}
-
-/// EXIF orientation tag values 1 to 8: how the stored pixels must be turned to stand upright.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Orientation {
-    #[default]
-    Normal,
-    MirrorHorizontal,
-    Rotate180,
-    MirrorVertical,
-    /// Mirror horizontally, then rotate 270° clockwise.
-    Transpose,
-    Rotate90,
-    /// Mirror horizontally, then rotate 90° clockwise.
-    Transverse,
-    Rotate270,
-}
-
-impl Orientation {
-    /// Tag values outside 1 to 8 mean the tag is broken, so the pixels are shown as stored.
-    fn from_exif(value: u32) -> Self {
-        match value {
-            2 => Orientation::MirrorHorizontal,
-            3 => Orientation::Rotate180,
-            4 => Orientation::MirrorVertical,
-            5 => Orientation::Transpose,
-            6 => Orientation::Rotate90,
-            7 => Orientation::Transverse,
-            8 => Orientation::Rotate270,
-            _ => Orientation::Normal,
-        }
-    }
-}
-
-pub struct Decoded {
-    /// Size of `pixels`: the stored size, or smaller when it was downscaled to fit the GPU.
-    pub size: [u32; 2],
-    /// Size in the file, before any downscale, for the info overlay.
-    pub original_size: [u32; 2],
-    /// RGBA8 in sRGB, row-major, no row padding.
-    pub pixels: Vec<u8>,
-    pub orientation: Orientation,
-}
-
-/// Why an image did not decode. `Display` is the one line the error card shows.
-#[derive(Debug)]
-pub enum DecodeError {
-    /// The file could not be read.
-    Io(io::Error),
-    /// Not something this viewer opens: misnamed or too large.
-    Unsupported(String),
-    /// The file is the format its name says, but its data is broken or cut short.
-    Corrupt(String),
-}
-
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DecodeError::Io(e) => write!(f, "Cannot read the file: {e}"),
-            DecodeError::Unsupported(reason) | DecodeError::Corrupt(reason) => f.write_str(reason),
-        }
-    }
-}
-
-impl std::error::Error for DecodeError {}
+use crate::image_file::domain::{Format, Orientation};
+use crate::load::domain::{DecodeError, Decoded, MAX_PIXELS, check_size, confirm, fit_within};
 
 /// Decodes the image at `path`, downscaling it if a side exceeds `max_dim` (the GPU's texture
 /// limit). The format comes from the extension, as for the scan.
@@ -167,40 +55,6 @@ fn decode_bytes(data: &[u8], format: Format, max_dim: u32) -> Result<Decoded, De
     })
 }
 
-/// A file whose content is another format gets told so, instead of a decoder's confusing error.
-fn confirm(named: Format, data: &[u8]) -> Result<(), DecodeError> {
-    if data.is_empty() {
-        return Err(DecodeError::Corrupt("The file is empty".to_owned()));
-    }
-    match Format::sniff(data) {
-        Some(actual) if actual == named => Ok(()),
-        Some(actual) => Err(DecodeError::Unsupported(format!(
-            "Misnamed: a {} file, not {}",
-            actual.name(),
-            named.name()
-        ))),
-        // Without a signature to check, a TGA is left to its decoder to judge.
-        None if named == Format::Tga => Ok(()),
-        None => Err(DecodeError::Corrupt(format!("Not a {} file", named.name()))),
-    }
-}
-
-fn check_size(width: u32, height: u32) -> Result<(), DecodeError> {
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(DecodeError::Unsupported(format!(
-            "Too large to open: {width} × {height} pixels"
-        )));
-    }
-    Ok(())
-}
-
-/// Decoder messages can run to several lines; the error card has room for one.
-fn damaged(message: impl fmt::Display) -> DecodeError {
-    let message = message.to_string();
-    let first = message.lines().next().unwrap_or_default().trim();
-    DecodeError::Corrupt(format!("Damaged image: {first}"))
-}
-
 fn decode_jpeg(data: &[u8]) -> Result<([u32; 2], Vec<u8>), DecodeError> {
     let options = DecoderOptions::default()
         .jpeg_set_out_colorspace(ColorSpace::RGBA)
@@ -208,16 +62,14 @@ fn decode_jpeg(data: &[u8]) -> Result<([u32; 2], Vec<u8>), DecodeError> {
         .set_max_width(usize::from(u16::MAX))
         .set_max_height(usize::from(u16::MAX));
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(data), options);
-    decoder.decode_headers().map_err(damaged)?;
+    decoder.decode_headers().map_err(DecodeError::damaged)?;
     let info = decoder.info().expect("headers are decoded");
     let size = [u32::from(info.width), u32::from(info.height)];
     check_size(size[0], size[1])?;
     if !scan_is_complete(data) {
-        return Err(DecodeError::Corrupt(
-            "Damaged image: the file is cut short".to_owned(),
-        ));
+        return Err(DecodeError::cut_short());
     }
-    let pixels = decoder.decode().map_err(damaged)?;
+    let pixels = decoder.decode().map_err(DecodeError::damaged)?;
     if decoder.output_colorspace() != Some(ColorSpace::RGBA) {
         return Err(DecodeError::Unsupported(
             "Cannot convert this JPEG's colours".to_owned(),
@@ -291,26 +143,11 @@ fn decode_with_image(data: &[u8], format: ImageFormat) -> Result<([u32; 2], Vec<
 fn image_error(error: ImageError) -> DecodeError {
     match error {
         // The data is in memory, so an I/O error means it ran out.
-        ImageError::IoError(_) => {
-            DecodeError::Corrupt("Damaged image: the file is cut short".to_owned())
-        }
+        ImageError::IoError(_) => DecodeError::cut_short(),
         ImageError::Limits(_) => DecodeError::Unsupported("Too large to open".to_owned()),
         ImageError::Unsupported(e) => DecodeError::Unsupported(format!("Cannot open: {e}")),
-        e => damaged(e),
+        e => DecodeError::damaged(e),
     }
-}
-
-/// The largest size within `max_dim` on both sides with the same aspect; the long side lands on
-/// `max_dim` exactly.
-fn fit_within(size: [u32; 2], max_dim: u32) -> [u32; 2] {
-    let long = size[0].max(size[1]);
-    if long <= max_dim {
-        return size;
-    }
-    size.map(|side| {
-        let scaled = (u64::from(side) * u64::from(max_dim) + u64::from(long) / 2) / u64::from(long);
-        scaled.max(1) as u32
-    })
 }
 
 fn downscale(from: [u32; 2], pixels: Vec<u8>, to: [u32; 2]) -> Vec<u8> {
@@ -450,9 +287,6 @@ mod tests {
         let plain = encode(halves(8, 8), ImageFormat::Jpeg);
         let plain = decode_bytes(&plain, Format::Jpeg, 16384).unwrap();
         assert_eq!(plain.orientation, Orientation::Normal);
-        for broken in [0, 9, 65535] {
-            assert_eq!(Orientation::from_exif(broken), Orientation::Normal);
-        }
     }
 
     #[test]
@@ -474,9 +308,6 @@ mod tests {
         let tall = encode(RgbImage::new(100, 300), ImageFormat::Bmp);
         let decoded = decode_bytes(&tall, Format::Bmp, 64).unwrap();
         assert_eq!(decoded.size, [21, 64]);
-
-        assert_eq!(fit_within([64, 10], 64), [64, 10]);
-        assert_eq!(fit_within([10_000, 1], 100), [100, 1]);
 
         // zune-jpeg's own default caps a side at 16384; a wider JPEG must still open, shrunk.
         let jpeg = encode(halves(17_000, 8), ImageFormat::Jpeg);

@@ -5,30 +5,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
 use winit::window::Window;
 
-use crate::view::Transform;
-
-/// Sampling when zoomed past native size. Minification always stays mipmapped linear, so a shrunk
-/// image never aliases whichever filter is chosen.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MagnificationFilter {
-    #[default]
-    Linear,
-    /// Sharp pixels at high zoom.
-    Nearest,
-}
-
-impl MagnificationFilter {
-    pub fn toggled(self) -> Self {
-        match self {
-            Self::Linear => Self::Nearest,
-            Self::Nearest => Self::Linear,
-        }
-    }
-}
+use crate::view::domain::{MagnificationFilter, Transform};
 
 /// Setting this to `1` skips the hardware adapter and runs on WARP, so the fallback path can be
 /// tested on a machine that has a GPU.

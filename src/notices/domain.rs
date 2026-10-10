@@ -1,33 +1,15 @@
-//! egui content drawn over the image: info overlay, notices and the preferences screen.
+//! Which notices show and how opaque each is: timing, replacement and the cap. No drawing.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-
-use egui::{Align2, Color32, CornerRadius, Frame, Margin, RichText};
-
-/// What the info overlay shows; I cycles through these in order.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[expect(
-    dead_code,
-    reason = "scaffold: the info overlay arrives with its issue"
-)]
-pub enum InfoOverlay {
-    #[default]
-    Hidden,
-    FileName,
-    Full,
-}
 
 /// Fully visible this long, then fading out over `NOTICE_FADE`.
 const NOTICE_SHOWN: Duration = Duration::from_secs(3);
 const NOTICE_FADE: Duration = Duration::from_millis(500);
 /// More than this and the oldest goes; a burst of errors must not cover the image.
 const MAX_NOTICES: usize = 3;
-/// Gap from the window corner and between notices, in points.
-const NOTICE_SPACING: f32 = 12.0;
 
-/// Short texts over the image, top-right, oldest on top. The top-left corner is left to the info
-/// overlay.
+/// The notices on screen. `notices::presentation` draws them top-right, oldest on top.
 #[derive(Debug, Default)]
 pub struct Notices {
     /// Oldest first.
@@ -74,56 +56,15 @@ impl Notices {
             .min()
     }
 
-    /// Drops expired notices and draws the rest.
-    pub fn show(&mut self, ctx: &egui::Context, now: Instant) {
+    /// Drops expired notices; returns the rest, oldest first, with their opacity.
+    pub fn visible(&mut self, now: Instant) -> Vec<(&str, f32)> {
         self.shown
             .retain(|notice| now < notice.since + NOTICE_SHOWN + NOTICE_FADE);
-        if self.shown.is_empty() {
-            return;
-        }
-        egui::Area::new(egui::Id::new("notices"))
-            .anchor(Align2::RIGHT_TOP, [-NOTICE_SPACING, NOTICE_SPACING])
-            // Never takes clicks or focus: input under a notice still reaches the viewer.
-            .interactable(false)
-            .fade_in(false)
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = NOTICE_SPACING / 2.0;
-                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                    for notice in &self.shown {
-                        ui.scope(|ui| {
-                            ui.multiply_opacity(opacity(notice.since, now));
-                            // Its own dark backing keeps white text legible on any image. The
-                            // surface is sRGB, so alpha blends in linear light: 200 left white
-                            // showing through as mid-grey; 240 darkens it to about sRGB 70.
-                            Frame::new()
-                                .fill(Color32::from_black_alpha(240))
-                                .corner_radius(CornerRadius::same(6))
-                                .inner_margin(Margin::symmetric(12, 8))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        RichText::new(&notice.text)
-                                            .size(20.0)
-                                            .color(Color32::WHITE),
-                                    );
-                                });
-                        });
-                    }
-                });
-            });
+        self.shown
+            .iter()
+            .map(|notice| (notice.text.as_str(), opacity(notice.since, now)))
+            .collect()
     }
-}
-
-/// `12345` as `12,345`, for counts in notices.
-pub fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut text = String::with_capacity(digits.len() * 4 / 3);
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            text.push(',');
-        }
-        text.push(digit);
-    }
-    text
 }
 
 fn opacity(since: Instant, now: Instant) -> f32 {
@@ -170,15 +111,6 @@ mod tests {
     }
 
     #[test]
-    fn thousands_are_separated() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1000), "1,000");
-        assert_eq!(thousands(12345), "12,345");
-        assert_eq!(thousands(1234567), "1,234,567");
-    }
-
-    #[test]
     fn a_fourth_notice_pushes_out_the_oldest() {
         let now = Instant::now();
         let mut notices = Notices::default();
@@ -201,5 +133,22 @@ mod tests {
         notices.notify("a", start);
         // While fading, every frame changes.
         assert_eq!(notices.next_change(halfway), Some(halfway));
+    }
+
+    #[test]
+    fn expired_notices_leave_and_the_rest_report_their_fade() {
+        let start = Instant::now();
+        let mut notices = Notices::default();
+        notices.notify("old", start);
+        notices.notify("new", start + NOTICE_SHOWN);
+        let halfway = start + NOTICE_SHOWN + NOTICE_FADE / 2;
+        let visible = notices.visible(halfway);
+        assert_eq!(visible.len(), 2);
+        assert!((visible[0].1 - 0.5).abs() < 1e-3);
+        assert_eq!(visible[1], ("new", 1.0));
+        assert_eq!(
+            notices.visible(start + NOTICE_SHOWN + NOTICE_FADE),
+            [("new", 1.0)]
+        );
     }
 }
