@@ -1,6 +1,6 @@
 # Rendering and platform stack
 
-Status: Proposed (2026-10-10); becomes Accepted when phase 1 of the [v1 build plan](../plans/active/2026-10-10-v1-build.md) lands on it.
+Status: Proposed (2026-10-10); becomes Accepted when SSR-14 verifies phase 1 of the [v1 build plan](../plans/active/2026-10-10-v1-build.md) on it.
 
 ## Context
 

@@ -16,9 +16,11 @@ SuperSlide-RS is a Rust rebuild of Ryan Geiss's SuperSlide (2008–2009), a smal
 | Location | Purpose and retention |
 | --- | --- |
 | [context/glossary.md](context/glossary.md) | The ubiquitous language. Update when a concept is added, renamed or retired. |
+| [context/architecture.md](context/architecture.md) | Modules, threads, preload cache, rendering, view transform, persistence, preference defaults and Cargo profiles. Rewrite a section when the code it describes changes. |
+| [context/keymap.md](context/keymap.md) | Every key and mouse binding; the `keymap` module implements it. Update with any binding change. |
 | [decisions/2026-10-10-v1-scope.md](decisions/2026-10-10-v1-scope.md) | What v1 keeps and cuts from the original, and why. Supersede with a new ADR when scope changes. |
 | [decisions/2026-10-10-rendering-stack.md](decisions/2026-10-10-rendering-stack.md) | Window, GPU, decoding and UI crates, and why the GPU stays without transitions. Supersede when a core crate is replaced. |
-| [plans/active/2026-10-10-v1-build.md](plans/active/2026-10-10-v1-build.md) | v1 build phases, acceptance criteria and open questions. Update as phases land; retire when v1 is accepted. |
+| [plans/active/2026-10-10-v1-build.md](plans/active/2026-10-10-v1-build.md) | Map of v1 issues SSR-1 to SSR-20: dependency order and phase progress. Update as issues close; SSR-20 retires it. |
 | [research/2026-10-10-original-superslide.md](research/2026-10-10-original-superslide.md) | The original's features, key bindings and preferences, from its website. Keep: the page is the only record of an unmaintained app. |
 | YouTrack project `SSR` ("SuperSlide-RS") | Issues, bugs and feature requests, read and updated through the `youtrack` MCP tools; open work is `project: SSR #Unresolved`. |
 

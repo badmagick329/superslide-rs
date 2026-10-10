@@ -1,0 +1,30 @@
+# Keymap
+
+The v1 bindings; the `keymap` module implements exactly this table. Change both together.
+
+| Input | Command |
+| --- | --- |
+| Space, right click | Next image |
+| Backspace, left click | Previous image |
+| Ctrl+Right / Ctrl+Left | First image of the next / previous group (group by subfolder only) |
+| A | Start or stop the slideshow |
+| Left drag, arrow keys | Pan |
+| Right drag, mouse wheel, + / - | Zoom |
+| Ctrl+ / Ctrl- | Zoom by double / half |
+| 0 | Back to fit |
+| R / L | Screen rotation right / left |
+| Ctrl+F | Toggle the magnification filter between linear and nearest |
+| I | Cycle the info overlay |
+| F11, Enter | Toggle fullscreen |
+| Esc | Leave fullscreen; in a window, quit |
+| N, D, Z | Sort by name, date, size |
+| S | Shuffle (again, if already shuffled) |
+| V | Reverse the sort |
+| G | Toggle group by subfolder |
+| O / Shift+O | Open a file / recursive open of a folder |
+| Delete | Delete the current image to the Recycle Bin |
+| M / C | Move / copy the current image to a folder (picker opens at the last target folder) |
+| Ctrl+C / Ctrl+V | Copy the current image to the clipboard / show the clipboard image |
+| P | Open or close preferences |
+
+Holding Space or Backspace repeats under the advance limit. Bindings the original had and v1 drops: H (no transitions to skip), t/T (contrast), Alt (no menu).
