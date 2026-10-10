@@ -1,6 +1,6 @@
 # Architecture
 
-The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, *File actions* and *Clipboard* describe SSR-15 and SSR-16 as built and verified, *Help overlay* describes SSR-21 and SSR-22 as built and verified, and *Info overlay*, *Preferences* and *Session* describe SSR-17, SSR-18 and SSR-19 as built and verified. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
+How the viewer works, section by section, each linking the code it describes. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
 
 ## Shape
 
@@ -145,7 +145,7 @@ Built in [browse/infrastructure.rs](../../src/browse/infrastructure.rs): `Open` 
 
 ## Session
 
-Built in SSR-19: `Session` in [prefs/domain/session.rs](../../src/prefs/domain/session.rs), the file in [prefs/infrastructure.rs](../../src/prefs/infrastructure.rs), wired up in [app.rs](../../src/shell/app.rs).
+`Session` is in [prefs/domain/session.rs](../../src/prefs/domain/session.rs), the file in [prefs/infrastructure.rs](../../src/prefs/infrastructure.rs), wired up in [app.rs](../../src/shell/app.rs).
 
 - **The file.** `superslide-session.toml` beside `superslide.exe`, written and recovered as the preferences file is (*Preferences*), through the same `TomlFile`: temp file then rename, a damaged file kept as `.bak` with a notice naming it, one notice when unwritable (`Cannot save the session: <reason>`). It holds the target folder for M and C; the image list as the route and absolute paths that rebuild it, the current image, its position and the order (`[images.order]`, a shuffle's seed in hex, since TOML integers stop at `i64::MAX`); and the window's placement. Hand edits that cannot be scanned (no paths, a relative path, a recursive open of other than one folder) drop the list; window sizes are clamped.
 - **What is saved.** `Shown::session` builds it from state at save time. The list comes from `Found::opened`, the scan's own record of what it opened: paths made absolute, and a lone file replaced by its folder, so the list still opens once that file is gone. Until a restored list's scan ends, the saved list stands in (`Shown::resuming`), so a save or exit mid-scan keeps it.
@@ -181,8 +181,6 @@ Delete, M and C act on the image on screen, error cards included, even while the
 
 ## Help overlay
 
-Built: the table in SSR-21, the overlay in SSR-22.
-
 - **One table.** `BINDINGS` in [keymap.rs](../../src/shell/keymap.rs) lists every binding as a `Row`: a `help::domain::Binding` (its keys as shown, what it does, its `Section`) and probes, sample inputs with the `Command` each must give. Matching stays the `match` in `for_key` and `Mouse`, because payloads, repeat rules and modifier guards read best as code; the keymap tests hold the two together:
   - every probe, replayed through `for_key`, `for_wheel` or `Mouse`, gives its command, and that command belongs to the probe's row;
   - the row a command belongs to is an exhaustive `match` over `Command`, so a new command does not compile until it names its row;
@@ -196,7 +194,7 @@ Built: the table in SSR-21, the overlay in SSR-22.
 
 ## Info overlay
 
-Built in SSR-17: the [`info_overlay`](../../src/info_overlay/mod.rs) slice, fed by `Shown::details` in [app.rs](../../src/shell/app.rs).
+The [`info_overlay`](../../src/info_overlay/mod.rs) slice, fed by `Shown::details` in [app.rs](../../src/shell/app.rs).
 
 - I cycles `Preferences::info_overlay` through hidden, file name and full (`InfoOverlay::cycled`). Each press saves the preferences file.
 - It describes the image on screen, not the image list's current image; the two differ while the next image loads. It is rebuilt from state every frame, so it changes on the frame the image or the view does; while hidden, nothing is gathered.
@@ -208,7 +206,7 @@ Built in SSR-17: the [`info_overlay`](../../src/info_overlay/mod.rs) slice, fed 
 
 ## Preferences
 
-Built in SSR-18: the [`prefs`](../../src/prefs/mod.rs) slice, wired up in [app.rs](../../src/shell/app.rs).
+The [`prefs`](../../src/prefs/mod.rs) slice, wired up in [app.rs](../../src/shell/app.rs).
 
 - **The file.** `superslide-prefs.toml` beside `superslide.exe`, so a copied folder carries it; `TomlFile::beside_exe` reads it once, before the window opens. No file means defaults. A missing field takes its default (`#[serde(default)]`) and unknown fields are ignored, so older and newer builds read each other's files. The owner may edit it by hand, so numbers are clamped to the ranges in [prefs/domain.rs](../../src/prefs/domain.rs) and folder names trimmed.
 - **Damaged file.** Anything but UTF-8 TOML of the right types is renamed to `superslide-prefs.toml.bak`, replacing an older backup; the app runs on defaults and a notice names the backup. If the rename fails, the notice gives the reason and the next save replaces the file.
@@ -238,6 +236,6 @@ Built in SSR-18: the [`prefs`](../../src/prefs/mod.rs) slice, wired up in [app.r
 - `[profile.dev.package."*"] opt-level = 3`: unoptimised decoders take seconds per 50 MP JPEG and make dev builds unusable.
 - Release: `lto = "thin"`, `codegen-units = 1`.
 - Toolchain: stable, edition 2024.
-- `cargo run --release --example make_fixtures -- <dir>` ([make_fixtures.rs](../../examples/make_fixtures.rs)) writes the phase 1 acceptance set into a directory outside the repo: 30 numbered 50 MP JPEGs (every fifth portrait) in `50mp/`, and `stripes.png`, the stripe stand-in as a file. It is generated, never committed.
+- `cargo run --release --example make_fixtures -- <dir>` ([make_fixtures.rs](../../examples/make_fixtures.rs)) writes the SSR-14 acceptance set into a directory outside the repo: 30 numbered 50 MP JPEGs (every fifth portrait) in `50mp/`, and `stripes.png`, the stripe stand-in as a file. It is generated, never committed.
 - `wgpu` and `egui-wgpu` build without default features, so only the Dx12 backend compiles; `image` builds only PNG, TGA and BMP, since JPEG goes through `zune-jpeg`; tests add its `jpeg` feature as a dev-dependency to encode JPEGs, which the shipped build does not compile. The defaults would also compile Vulkan, GL, Metal, WebGL, AVIF and WebP support the viewer never uses.
 - A scaffolded module carries `#![expect(dead_code, reason = "scaffold: …")]`. Once the module is wired up, the expectation goes unfulfilled and `clippy -D warnings` fails: delete the attribute then.

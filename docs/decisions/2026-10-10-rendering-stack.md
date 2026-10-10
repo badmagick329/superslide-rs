@@ -1,6 +1,6 @@
 # Rendering and platform stack
 
-Status: Accepted (2026-10-10), once SSR-14 verified phase 1 of the [v1 build plan](../plans/active/2026-10-10-v1-build.md) on it: 50 MP JPEGs page with no visible wait, and a quarter-size image of 1 px stripes shows no moiré while panning.
+Status: Accepted (2026-10-10), once SSR-14 verified the core viewer on it: 50 MP JPEGs page with no visible wait, and a quarter-size image of 1 px stripes shows no moiré while panning.
 
 ## Context
 
