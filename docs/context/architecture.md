@@ -1,6 +1,6 @@
 # Architecture
 
-The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* describes SSR-15 as built. *Files and persistence* and *Clipboard* are still the target for phases 2 and 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
+The v1 design. Every section up to *Image list order* describes phase 1 as built and verified (SSR-14), linking the code, and *File actions* describes SSR-15 as built and verified. *Files and persistence* and *Clipboard* are still the target for phases 2 and 3, and *Preference defaults* lists defaults the code already uses but no file sets yet; as each of those issues lands, rewrite its section to describe the code, pointing at it rather than restating it. Bindings live in [keymap.md](keymap.md); terms in [glossary.md](glossary.md).
 
 ## Shape
 
@@ -158,7 +158,7 @@ Delete, M and C act on the image on screen, error cards included, even while the
 - Every outcome shows a notice naming the file and the target folder's name (not its full path, which wraps over several lines). A held key acts once, and a second press on an image whose action is still running is ignored.
 - After a delete or move, `ImageList::remove` takes the image out and `PreloadCache::reindex` drops it from the cache. If it was current, the next image becomes current (wrapping from the last to the first, with the wrap notice) and shows at once when preloaded: the next image is always in the preload window. Removing the last image leaves an empty view (`Showing::Nothing`), the bare window title and `No images left`.
 - The stand-in has no file, so file actions on it show `This image is not a file`; the clipboard image (SSR-16) will too.
-- Measured on an RTX 3070, release build, 50 MP JPEGs: Delete to the next image on screen 109–126 ms, all of it the Recycle Bin call; a move within a drive and one from C: to D: (17 MB, copied and flushed) put the next image up 315 and 428 ms after the picker closed, with no `Loading…`. A deleted image restored from the Recycle Bin to its folder byte-identical.
+- Measured on an RTX 3070, release build, 50 MP JPEGs: Delete to the next image on screen 109–126 ms, all of it the Recycle Bin call; a move within a drive and one from C: to D: (17 MB, copied and flushed) put the next image up 315 and 428 ms after the picker closed, with no `Loading…`. A deleted image restored from the Recycle Bin to its folder byte-identical. A move of a 17 MB image onto a 16 MB virtual drive with 6 MB free failed with `There is not enough space on the disk`, left the original byte-identical and left no partial file.
 
 ## Clipboard
 
