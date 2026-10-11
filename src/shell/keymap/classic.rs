@@ -426,6 +426,9 @@ pub(super) mod tests {
             }
             | Command::JumpGroupOrEnd(_)
             | Command::GoTo(_)
+            | Command::ToggleMarks(_)
+            | Command::ClearMarks
+            | Command::NextMarked(_)
             | Command::LeaveFullscreen
             | Command::Quit => unreachable!("{command:?} is Vim only"),
         }

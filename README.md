@@ -32,7 +32,7 @@ Open images by dragging a file or folder onto the window, or press **O**. Next t
 | P | Preferences, saved next to `superslide.exe` |
 | ? | List every key; / filters the list |
 
-Prefer Vim keys? Set **Keymap** to **Vim** in the preferences: j / k page, H J K L pan, `5j`, `gg` / `G`, `dd`, and Esc never quits.
+Prefer Vim keys? Set **Keymap** to **Vim** in the preferences: j / k page, H J K L pan, `5j`, `gg` / `G`, `dd`, and Esc never quits. `m` marks images, and then `dd`, `x` (move), `c` (copy) and `y` act on all of them; `y` copies them as files, ready to paste into Discord or a folder.
 
 Move and copy never overwrite a file: if the folder already has one with that name, nothing happens and you get a notice.
 

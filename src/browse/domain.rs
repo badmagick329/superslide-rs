@@ -2,6 +2,7 @@
 //! what a scan recorded, so re-sorting never touches the disk.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::hash::{BuildHasher, RandomState};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -127,7 +128,7 @@ impl Entry {
     }
 }
 
-/// The ordered images from the last open and which one is current.
+/// The ordered images from the last open, which one is current, and which are marked.
 #[derive(Debug)]
 pub struct ImageList {
     /// In display order.
@@ -135,6 +136,9 @@ pub struct ImageList {
     /// Index into `entries`; meaningless while `entries` is empty.
     current: usize,
     order: Order,
+    /// Marks belong to files, not positions, so re-sorting keeps them; a new image list starts
+    /// with none. Always a subset of `entries`' paths.
+    marked: HashSet<PathBuf>,
 }
 
 impl ImageList {
@@ -144,6 +148,7 @@ impl ImageList {
             entries,
             current: 0,
             order,
+            marked: HashSet::new(),
         };
         arrange(&mut list.entries, order);
         list.current = current.and_then(|path| list.position(path)).unwrap_or(0);
@@ -299,6 +304,71 @@ impl ImageList {
         self.current = current.and_then(|path| self.position(&path)).unwrap_or(0);
     }
 
+    /// Vim's `[count]m`: marks or unmarks `images` images from the current one on, stopping at
+    /// the last. All take the opposite of the current image's state, so a mixed run comes out
+    /// uniform. Returns whether they are now marked; `None` while empty.
+    pub fn toggle_marks(&mut self, images: usize) -> Option<bool> {
+        let mark = !self.marked.contains(&self.current()?.path);
+        let end = self
+            .current
+            .saturating_add(images.max(1))
+            .min(self.entries.len());
+        for entry in &self.entries[self.current..end] {
+            match mark {
+                true => self.marked.insert(entry.path.clone()),
+                false => self.marked.remove(&entry.path),
+            };
+        }
+        Some(mark)
+    }
+
+    pub fn is_marked(&self, path: &Path) -> bool {
+        self.marked.contains(path)
+    }
+
+    pub fn marked_count(&self) -> usize {
+        self.marked.len()
+    }
+
+    /// The marked images in display order, the order bulk actions take them in.
+    pub fn marked(&self) -> Vec<PathBuf> {
+        self.entries
+            .iter()
+            .filter(|entry| self.marked.contains(&entry.path))
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
+    pub fn unmark(&mut self, path: &Path) {
+        self.marked.remove(path);
+    }
+
+    /// Returns how many were marked.
+    pub fn clear_marks(&mut self) -> usize {
+        std::mem::take(&mut self.marked).len()
+    }
+
+    /// Vim's `n` / `N`: makes the next marked image along current, wrapping round the ends as
+    /// Vim's search does. `None` when no image but the current one is marked; otherwise whether
+    /// it wrapped.
+    pub fn next_marked(&mut self, direction: Direction) -> Option<bool> {
+        let len = self.entries.len();
+        let (position, wrapped) = (1..len).find_map(|step| {
+            let (position, wrapped) = match direction {
+                Direction::Forward => {
+                    let position = self.current + step;
+                    (position % len, position >= len)
+                }
+                Direction::Backward => ((self.current + len - step) % len, step > self.current),
+            };
+            self.marked
+                .contains(&self.entries[position].path)
+                .then_some((position, wrapped))
+        })?;
+        self.current = position;
+        Some(wrapped)
+    }
+
     /// A linear search: fine per decode result, too slow per cache entry.
     pub fn position(&self, path: &Path) -> Option<usize> {
         self.entries.iter().position(|entry| entry.path == path)
@@ -310,6 +380,7 @@ impl ImageList {
     pub fn remove(&mut self, path: &Path) -> Option<Removed> {
         let position = self.position(path)?;
         self.entries.remove(position);
+        self.marked.remove(path);
         let was_current = position == self.current;
         let mut wrapped = false;
         if position < self.current {
@@ -789,6 +860,69 @@ mod tests {
             assert!(!list.jump_group_or_end(Direction::Backward));
             assert_eq!(list.current_position(), 0, "{paths:?}");
         }
+    }
+
+    #[test]
+    fn marks_follow_files_through_re_sorts_and_removals() {
+        // Name order: b, img1, IMG2, img10.
+        let mut list = ImageList::new(sample(), Some(Path::new("f/img1.jpg")), by(SortKey::Name));
+        assert_eq!(list.toggle_marks(2), Some(true));
+        assert_eq!(
+            list.marked(),
+            [PathBuf::from("f/img1.jpg"), "f/IMG2.jpg".into()]
+        );
+        // A run starting on a marked image unmarks, whatever the rest was.
+        list.go_to(2);
+        assert_eq!(
+            list.toggle_marks(usize::MAX),
+            Some(false),
+            "stops at the last"
+        );
+        assert_eq!(list.marked(), [PathBuf::from("f/img1.jpg")]);
+
+        list.go_to(3);
+        list.toggle_marks(1);
+        list.set_order(Order {
+            reversed: true,
+            ..by(SortKey::Name)
+        });
+        assert_eq!(
+            list.marked(),
+            [PathBuf::from("f/img10.jpg"), "f/img1.jpg".into()],
+            "the same files, in the new display order"
+        );
+        list.remove(Path::new("f/img1.jpg"));
+        assert!(!list.is_marked(Path::new("f/img1.jpg")));
+        assert_eq!(list.marked_count(), 1);
+        assert_eq!(list.clear_marks(), 1);
+        assert_eq!(list.marked_count(), 0);
+
+        let mut empty = ImageList::new(Vec::new(), None, by(SortKey::Name));
+        assert_eq!(empty.toggle_marks(1), None);
+    }
+
+    #[test]
+    fn n_and_shift_n_go_to_marked_images_and_wrap() {
+        // Name order: b, img1, IMG2, img10.
+        let mut list = ImageList::new(sample(), Some(Path::new("f/b.jpg")), by(SortKey::Name));
+        assert_eq!(list.next_marked(Direction::Forward), None, "nothing marked");
+        list.toggle_marks(1);
+        assert_eq!(
+            list.next_marked(Direction::Forward),
+            None,
+            "only the current image is marked"
+        );
+        list.go_to(2);
+        list.toggle_marks(1);
+        list.go_to(1);
+        assert_eq!(list.next_marked(Direction::Forward), Some(false));
+        assert_eq!(list.current_position(), 2);
+        assert_eq!(list.next_marked(Direction::Forward), Some(true));
+        assert_eq!(list.current_position(), 0);
+        assert_eq!(list.next_marked(Direction::Backward), Some(true));
+        assert_eq!(list.current_position(), 2);
+        assert_eq!(list.next_marked(Direction::Backward), Some(false));
+        assert_eq!(list.current_position(), 0);
     }
 
     #[test]

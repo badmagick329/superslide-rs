@@ -14,6 +14,7 @@ pub enum Section {
     Navigate,
     View,
     Order,
+    Marks,
     Files,
     Clipboard,
     Window,

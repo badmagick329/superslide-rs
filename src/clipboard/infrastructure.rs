@@ -1,6 +1,7 @@
 //! Ctrl+C and Ctrl+V on a thread of their own, through `arboard`. A copy re-decodes the file at
 //! full size and arboard encodes it as PNG as well as a bitmap, which takes seconds for a large
-//! photo; the event loop must not wait for that.
+//! photo; the event loop must not wait for that. A copy of the marked images puts their paths
+//! on the clipboard instead, as Explorer's Ctrl+C does.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -31,12 +32,19 @@ pub enum Request {
         path: PathBuf,
         turns: u8,
     },
+    /// The files themselves (`CF_HDROP`), not pixels: one clipboard image cannot hold several,
+    /// and Discord, Explorer and chat apps paste a file list as one file each.
+    CopyFiles(Vec<PathBuf>),
     Paste,
 }
 
 pub enum Done {
     Copied {
         path: PathBuf,
+        result: Result<(), CopyFailure>,
+    },
+    CopiedFiles {
+        paths: Vec<PathBuf>,
         result: Result<(), CopyFailure>,
     },
     Pasted(Result<Decoded, PasteFailure>),
@@ -63,6 +71,12 @@ impl ClipboardThread {
                         Request::Copy { path, turns } => {
                             let result = copy(&loading, &path, turns);
                             Done::Copied { path, result }
+                        }
+                        Request::CopyFiles(paths) => {
+                            let result = Clipboard::new()
+                                .and_then(|mut clipboard| clipboard.set().file_list(&paths))
+                                .map_err(|e| CopyFailure::Clipboard(e.to_string()));
+                            Done::CopiedFiles { paths, result }
                         }
                         Request::Paste => Done::Pasted(paste(&loading)),
                     });

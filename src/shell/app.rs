@@ -19,10 +19,10 @@ use crate::browse::domain::advance::AdvanceLimit;
 use crate::browse::domain::slideshow::Slideshow;
 use crate::browse::domain::{Direction, ImageList, Order, Resume, SortMode, Travel, folder};
 use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
-use crate::browse::presentation::describe;
+use crate::browse::presentation::{self as browse, describe};
 use crate::clipboard::infrastructure::{ClipboardThread, Done, Loading, Request};
 use crate::clipboard::presentation as clipboard;
-use crate::file_actions::domain::{Action, Failure, Transfer};
+use crate::file_actions::domain::{Action, Batch, Failure, Transfer};
 use crate::file_actions::infrastructure::FileActions;
 use crate::file_actions::presentation as file_actions;
 use crate::help::domain::{Binding, Help};
@@ -75,6 +75,9 @@ const ORDER_NOTICE: &str = "order";
 const SLIDESHOW_NOTICE: &str = "slideshow";
 /// Key of the notice for Ctrl+C and Ctrl+V, so `Copying…` is replaced by its result.
 const CLIPBOARD_NOTICE: &str = "clipboard";
+/// Key of a batch's notice, so `Moving 12 images…` is replaced by its result.
+const BATCH_NOTICE: &str = "batch";
+const MARKS_NOTICE: &str = "marks";
 const NOT_A_FILE: &str = "This image is not a file";
 const TITLE: &str = "SuperSlide-RS";
 /// The app icon's resource ordinal, from `assets/superslide.rc`.
@@ -187,6 +190,8 @@ struct Shown {
     /// Paths with a file action asked for but not finished. A second Delete pressed before the
     /// first one's result would act on the same file again.
     acting_on: HashSet<PathBuf>,
+    /// Bulk actions on the marked images with results still to come.
+    batches: Vec<Batch>,
     /// Where M and C last sent an image; their folder picker opens there. Kept in the session.
     target_folder: Option<PathBuf>,
     clipboard: ClipboardThread,
@@ -433,6 +438,7 @@ impl ApplicationHandler<AppEvent> for App {
             workers,
             file_actions,
             acting_on: HashSet::new(),
+            batches: Vec::new(),
             target_folder: session.target_folder,
             clipboard,
             pasted: false,
@@ -949,6 +955,56 @@ impl Shown {
         self.moved(direction, false);
     }
 
+    /// Vim's `[count]m`. The clipboard image is no file, so it cannot be marked.
+    fn toggle_marks(&mut self, count: usize) {
+        let Some(images) = &mut self.images else {
+            return;
+        };
+        if self.pasted {
+            self.notices.notify(NOT_A_FILE, Instant::now());
+        } else {
+            images.toggle_marks(count);
+        }
+        self.window.request_redraw();
+    }
+
+    fn clear_marks(&mut self) {
+        let cleared = self.images.as_mut().map_or(0, ImageList::clear_marks);
+        let text = match cleared {
+            0 => "Nothing is marked".to_owned(),
+            1 => "Cleared 1 mark".to_owned(),
+            n => format!("Cleared {n} marks"),
+        };
+        self.notices.notify_as(MARKS_NOTICE, text, Instant::now());
+        self.window.request_redraw();
+    }
+
+    /// Vim's `n` / `N`. Wrapping round gets a notice, as Vim's search does.
+    fn next_marked(&mut self, direction: Direction) {
+        let Some(images) = &mut self.images else {
+            return;
+        };
+        let now = Instant::now();
+        let Some(wrapped) = images.next_marked(direction) else {
+            let text = match images.marked_count() {
+                0 => "Nothing is marked",
+                _ => "No other image is marked",
+            };
+            self.notices.notify_as(MARKS_NOTICE, text, now);
+            return self.window.request_redraw();
+        };
+        if wrapped {
+            let text = match direction {
+                Direction::Forward => "Wrapped to the first marked image",
+                Direction::Backward => "Wrapped to the last marked image",
+            };
+            self.notices.notify_as(MARKS_NOTICE, text, now);
+            self.window.request_redraw();
+        }
+        self.pasted = false;
+        self.moved(direction, false);
+    }
+
     /// Re-sorts in memory; the current image stays current, so nothing on screen changes but the
     /// notice. The preload window moves to the current image's new neighbours.
     fn reorder(&mut self, change: impl FnOnce(Order) -> Order) {
@@ -1095,9 +1151,22 @@ impl Shown {
         self.show_current(Instant::now());
     }
 
-    /// Asks the file action thread to delete (`None`), move or copy the image on screen: the one
-    /// the owner sees, even while the current image is still loading.
+    /// The marked images in display order; empty while none is marked.
+    fn marked(&self) -> Vec<PathBuf> {
+        self.images
+            .as_ref()
+            .map(ImageList::marked)
+            .unwrap_or_default()
+    }
+
+    /// Asks the file action thread to delete (`None`), move or copy every marked image, or with
+    /// none marked, the image on screen: the one the owner sees, even while the current image is
+    /// still loading.
     fn act(&mut self, transfer: Option<Transfer>) {
+        let marked = self.marked();
+        if !marked.is_empty() {
+            return self.act_on_marked(transfer, marked);
+        }
         let path = match &self.showing {
             Showing::Nothing => return,
             showing => showing.path().map(Path::to_path_buf),
@@ -1110,27 +1179,58 @@ impl Shown {
         if self.acting_on.contains(&path) {
             return;
         }
-        let action = match transfer {
-            None => Action::Delete,
-            Some(transfer) => {
-                let Some(folder) = self.pick_folder(transfer, &path) else {
-                    return;
-                };
-                self.target_folder = Some(folder.clone());
-                self.session_changed = true;
-                Action::Transfer(transfer, folder)
-            }
+        let Some(action) = self.action(transfer, 1, &path) else {
+            return;
         };
         self.acting_on.insert(path.clone());
         self.file_actions.request(path, action);
     }
 
-    /// The native folder picker for M or C, opening where the last one went, else at the
-    /// image's own folder. Modal, like [`Self::pick`]. `None` when cancelled.
-    fn pick_folder(&self, transfer: Transfer, path: &Path) -> Option<PathBuf> {
-        let title = match transfer {
-            Transfer::Move => "Move to folder",
-            Transfer::Copy => "Copy to folder",
+    /// One batch, one folder pick and one notice for all of them. Images already being acted on
+    /// are left out, as a second Delete leaves the current image alone.
+    fn act_on_marked(&mut self, transfer: Option<Transfer>, marked: Vec<PathBuf>) {
+        let paths: Vec<PathBuf> = marked
+            .into_iter()
+            .filter(|path| !self.acting_on.contains(path))
+            .collect();
+        let Some(first) = paths.first() else {
+            return;
+        };
+        let Some(action) = self.action(transfer, paths.len(), first) else {
+            return;
+        };
+        let text = file_actions::describe_batch_start(&action, paths.len());
+        self.notices.notify_as(BATCH_NOTICE, text, Instant::now());
+        self.window.request_redraw();
+        for path in &paths {
+            self.acting_on.insert(path.clone());
+            self.file_actions.request(path.clone(), action.clone());
+        }
+        self.batches.push(Batch::new(action, &paths));
+    }
+
+    /// Delete for `None`; a move or copy asks for its folder first, and is `None` when that is
+    /// cancelled.
+    fn action(&mut self, transfer: Option<Transfer>, images: usize, path: &Path) -> Option<Action> {
+        let Some(transfer) = transfer else {
+            return Some(Action::Delete);
+        };
+        let folder = self.pick_folder(transfer, images, path)?;
+        self.target_folder = Some(folder.clone());
+        self.session_changed = true;
+        Some(Action::Transfer(transfer, folder))
+    }
+
+    /// The native folder picker for a move or copy, opening where the last one went, else at
+    /// the image's own folder. Modal, like [`Self::pick`]. `None` when cancelled.
+    fn pick_folder(&self, transfer: Transfer, images: usize, path: &Path) -> Option<PathBuf> {
+        let verb = match transfer {
+            Transfer::Move => "Move",
+            Transfer::Copy => "Copy",
+        };
+        let title = match images {
+            1 => format!("{verb} to folder"),
+            _ => format!("{verb} {} to folder", file_actions::images(images)),
         };
         rfd::FileDialog::new()
             .set_parent(&*self.window)
@@ -1139,14 +1239,30 @@ impl Shown {
             .pick_folder()
     }
 
-    /// Every outcome gets a notice; a deleted or moved image leaves the image list.
+    /// Every outcome gets a notice, a batch's once its last result is in. A deleted or moved
+    /// image leaves the image list; one that failed stays marked, for another try.
     fn acted(&mut self, path: PathBuf, action: Action, result: Result<(), Failure>) {
         self.acting_on.remove(&path);
         let now = Instant::now();
-        let text = file_actions::describe(&file_name(&path), &action, &result);
-        self.notices.notify(text, now);
+        let succeeded = result.is_ok();
+        if succeeded && let Some(images) = &mut self.images {
+            images.unmark(&path);
+        }
+        match self.batches.iter().position(|batch| batch.holds(&path)) {
+            Some(i) => {
+                if self.batches[i].finish(&path, result) {
+                    let batch = self.batches.remove(i);
+                    let text = file_actions::describe_batch(&batch);
+                    self.notices.notify_as(BATCH_NOTICE, text, now);
+                }
+            }
+            None => {
+                let text = file_actions::describe(&file_name(&path), &action, &result);
+                self.notices.notify(text, now);
+            }
+        }
         self.window.request_redraw();
-        if result.is_ok() && action.removes() {
+        if succeeded && action.removes() {
             self.remove(&path, now);
         }
     }
@@ -1190,9 +1306,17 @@ impl Shown {
     }
 
     /// Ctrl+C: the image on screen, turned as shown, onto the clipboard. An error card's file is
-    /// tried again, so its notice says why it cannot be copied.
+    /// tried again, so its notice says why it cannot be copied. While any image is marked, the
+    /// marked files instead, as they are on disk.
     fn copy(&mut self) {
         let now = Instant::now();
+        let marked = self.marked();
+        if !marked.is_empty() {
+            let text = format!("Copying {}…", file_actions::images(marked.len()));
+            self.notices.notify_as(CLIPBOARD_NOTICE, text, now);
+            self.window.request_redraw();
+            return self.clipboard.request(Request::CopyFiles(marked));
+        }
         let (path, turns) = match &self.showing {
             Showing::Nothing => return,
             Showing::Image { .. } if self.pasted => {
@@ -1228,6 +1352,16 @@ impl Shown {
         let decoded = match done {
             Done::Copied { path, result } => {
                 let text = clipboard::copied(&file_name(&path), &result);
+                return self.notices.notify_as(CLIPBOARD_NOTICE, text, now);
+            }
+            // Copied, so their marks have done their job, as after a move.
+            Done::CopiedFiles { paths, result } => {
+                if result.is_ok()
+                    && let Some(images) = &mut self.images
+                {
+                    paths.iter().for_each(|path| images.unmark(path));
+                }
+                let text = clipboard::copied_files(&file_actions::images(paths.len()), &result);
                 return self.notices.notify_as(CLIPBOARD_NOTICE, text, now);
             }
             Done::Pasted(Err(failure)) => {
@@ -1321,6 +1455,18 @@ impl Shown {
         let hints = self.keys.hints();
         let bindings = self.keys.bindings();
         let pending = self.keys.pending();
+        let marks = self
+            .images
+            .as_ref()
+            .filter(|images| images.marked_count() > 0)
+            .map(|images| browse::Marks {
+                count: images.marked_count(),
+                on_screen: !self.pasted
+                    && self
+                        .showing
+                        .path()
+                        .is_some_and(|path| images.is_marked(path)),
+            });
         let shown_notices = &mut self.notices;
         let open_help = &mut self.help;
         let before = self
@@ -1348,6 +1494,9 @@ impl Shown {
             }
             if let Some(screen) = screen {
                 preferences::show(ui.ctx(), edited, screen, &hints.preferences);
+            }
+            if let Some(marks) = &marks {
+                browse::show_marks(ui.ctx(), marks);
             }
             if let Some(pending) = &pending {
                 help::show_pending(ui.ctx(), pending);
@@ -1409,6 +1558,9 @@ impl Shown {
             Command::JumpGroup(direction) => return self.jump_group(direction),
             Command::JumpGroupOrEnd(direction) => return self.jump_group_or_end(direction),
             Command::GoTo(position) => return self.go_to(position),
+            Command::ToggleMarks(count) => return self.toggle_marks(count),
+            Command::ClearMarks => return self.clear_marks(),
+            Command::NextMarked(direction) => return self.next_marked(direction),
             Command::DeleteToRecycleBin => return self.act(None),
             Command::Transfer(transfer) => return self.act(Some(transfer)),
             Command::CopyToClipboard => return self.copy(),

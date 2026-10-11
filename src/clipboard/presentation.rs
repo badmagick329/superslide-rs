@@ -9,6 +9,14 @@ pub fn copied(file_name: &str, result: &Result<(), CopyFailure>) -> String {
     }
 }
 
+/// `images` is already worded, such as `3 images`.
+pub fn copied_files(images: &str, result: &Result<(), CopyFailure>) -> String {
+    match result {
+        Ok(()) => format!("Copied {images} to the clipboard as files"),
+        Err(failure) => format!("Cannot copy {images} to the clipboard: {failure}"),
+    }
+}
+
 pub fn paste_failed(failure: &PasteFailure) -> String {
     match failure {
         PasteFailure::NoImage => "No image on the clipboard".to_owned(),

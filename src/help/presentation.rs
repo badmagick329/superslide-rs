@@ -159,6 +159,7 @@ fn title(section: Section) -> &'static str {
         Section::Navigate => "Navigate",
         Section::View => "View",
         Section::Order => "Order",
+        Section::Marks => "Marks",
         Section::Files => "Files",
         Section::Clipboard => "Clipboard",
         Section::Window => "Window",

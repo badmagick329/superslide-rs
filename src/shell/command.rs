@@ -44,9 +44,15 @@ pub enum Command {
     Shuffle,
     ReverseSort,
     ToggleGrouping,
+    /// Vim's `[count]m`: marks or unmarks this many images from the current one on.
+    ToggleMarks(usize),
+    ClearMarks,
+    /// Vim's `n` / `N`: the next or previous marked image, wrapping.
+    NextMarked(Direction),
     Open {
         recursive: bool,
     },
+    /// This and the next two act on every marked image while any is marked.
     DeleteToRecycleBin,
     Transfer(Transfer),
     CopyToClipboard,

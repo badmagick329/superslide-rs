@@ -301,8 +301,8 @@ fn second(prefix: Prefix, count: Option<usize>, stroke: Stroke) -> Option<Comman
     })
 }
 
-/// A one-key binding and whether it repeats while held. Only j / k, Space / Backspace, G and gg
-/// read the count; every other key drops it.
+/// A one-key binding and whether it repeats while held. Only j / k, Space / Backspace, G, gg and
+/// m read the count; every other key drops it.
 fn single(stroke: Stroke, count: Option<usize>, repeat: bool) -> Option<(Command, bool)> {
     // Repeat passes through: the advance limit, not the keyboard, sets the pace.
     let travel = |direction| {
@@ -356,7 +356,9 @@ fn single(stroke: Stroke, count: Option<usize>, repeat: bool) -> Option<(Command
             '>' => (Command::Rotate(Turn::Right), false),
             '<' => (Command::Rotate(Turn::Left), false),
             'e' => (Command::Open { recursive: false }, false),
-            'm' => (Command::Transfer(Transfer::Move), false),
+            'm' => (Command::ToggleMarks(count.unwrap_or(1)), false),
+            'n' => (Command::NextMarked(Direction::Forward), false),
+            'x' => (Command::Transfer(Transfer::Move), false),
             'c' => (Command::Transfer(Transfer::Copy), false),
             'y' => (Command::CopyToClipboard, false),
             'p' => (Command::PasteFromClipboard, false),
@@ -377,6 +379,8 @@ fn single(stroke: Stroke, count: Option<usize>, repeat: bool) -> Option<(Command
                 None => (Command::JumpGroupOrEnd(Direction::Forward), false),
             },
             'e' => (Command::Open { recursive: true }, false),
+            'm' => (Command::ClearMarks, false),
+            'n' => (Command::NextMarked(Direction::Backward), false),
             _ => return None,
         },
         Stroke::Named { ctrl: true, .. } | Stroke::Other => return None,
@@ -577,6 +581,30 @@ pub const BINDINGS: &[Row] = &[
         &[keys("zg", Command::ToggleGrouping)],
     ),
     row(
+        "m, [count]m",
+        "Mark or unmark the current image, or that many from here: dd, x, c and y then act on every marked image",
+        Section::Marks,
+        &[
+            keys("m", Command::ToggleMarks(1)),
+            keys("5m", Command::ToggleMarks(5)),
+        ],
+    ),
+    row(
+        "M",
+        "Clear all marks",
+        Section::Marks,
+        &[keys("M", Command::ClearMarks)],
+    ),
+    row(
+        "n / N",
+        "Next / previous marked image",
+        Section::Marks,
+        &[
+            keys("n", Command::NextMarked(Direction::Forward)),
+            keys("N", Command::NextMarked(Direction::Backward)),
+        ],
+    ),
+    row(
         "e / E",
         "Open a file / recursive open of a folder",
         Section::Files,
@@ -587,7 +615,7 @@ pub const BINDINGS: &[Row] = &[
     ),
     row(
         "dd, Delete",
-        "Delete the current image to the Recycle Bin",
+        "Delete the current image, or the marked ones, to the Recycle Bin",
         Section::Files,
         &[
             keys("dd", Command::DeleteToRecycleBin),
@@ -595,17 +623,17 @@ pub const BINDINGS: &[Row] = &[
         ],
     ),
     row(
-        "m / c",
-        "Move / copy the current image to a folder (picker opens at the last target folder)",
+        "x / c",
+        "Move / copy the current image, or the marked ones, to a folder (picker opens at the last target folder)",
         Section::Files,
         &[
-            keys("m", Command::Transfer(Transfer::Move)),
+            keys("x", Command::Transfer(Transfer::Move)),
             keys("c", Command::Transfer(Transfer::Copy)),
         ],
     ),
     row(
         "y, Ctrl+C / p, Ctrl+V",
-        "Copy the current image to the clipboard / show the clipboard image",
+        "Copy the current image to the clipboard, or the marked ones as files / show the clipboard image",
         Section::Clipboard,
         &[
             keys("y", Command::CopyToClipboard),
@@ -780,7 +808,10 @@ pub(super) mod tests {
             Command::ToggleGrouping => "zg",
             Command::Open { .. } => "e / E",
             Command::DeleteToRecycleBin => "dd, Delete",
-            Command::Transfer(_) => "m / c",
+            Command::ToggleMarks(_) => "m, [count]m",
+            Command::ClearMarks => "M",
+            Command::NextMarked(_) => "n / N",
+            Command::Transfer(_) => "x / c",
             Command::CopyToClipboard | Command::PasteFromClipboard => "y, Ctrl+C / p, Ctrl+V",
             Command::ToggleFullscreen => "f, F11, Enter",
             Command::LeaveFullscreen => "Esc",
