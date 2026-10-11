@@ -92,6 +92,18 @@ impl Order {
             grouped: false,
         }
     }
+
+    /// The same order with a shuffle shuffled anew, for a new image list: carrying the seed over
+    /// would repeat the last list's sequence wherever the two lists share files.
+    pub fn reshuffled(self) -> Self {
+        match self.mode {
+            SortMode::Shuffle { .. } => Self {
+                mode: SortMode::new_shuffle(),
+                ..self
+            },
+            SortMode::By(_) => self,
+        }
+    }
 }
 
 /// One image found by a scan. Holds what sorting needs, so re-sorting never touches the disk.

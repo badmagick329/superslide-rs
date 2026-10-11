@@ -5,6 +5,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Term | Meaning | Avoid | In code |
 | --- | --- | --- | --- |
 | Advance limit | The shortest interval between image changes while a key that moves through the image list is held: Space or Backspace, or Vim's j, k, Ctrl+D or Ctrl+U. | fast-forward, fast-back | `AdvanceLimit` |
+| Chosen order | The order last set with a sort key (N, D, Z, S, V or G); every open takes it, a shuffle shuffled anew. Kept in the session. | default sort, last sort | `Shown::chosen_order`; applied by `Open::order` |
 | Clipboard image | An image pasted with Ctrl+V, shown in place of the current image but outside the image list; file actions, marks and Ctrl+C are disabled on it. | pasted image | `Showing::Image` with no path while `Shown::pasted` is set |
 | Count | Digits typed before a Vim key to say how many or which: `5j` moves five images, `5G` goes to the fifth. | prefix, number argument | `vim::Vim::count` |
 | Current image | The image on screen, one position in the image list. | current slide | |
@@ -26,9 +27,9 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Preferences | The owner's persisted options, kept in `superslide-prefs.toml` beside the executable, and the screen opened with P (Vim: `:`) that edits them. | settings, config, options | `prefs` slice; the options are `Preferences`, the file `TomlFile<Preferences>`, the open screen `Screen` |
 | Preload cache | Decoded images held on the GPU under a memory budget so navigation shows them without waiting. | | `PreloadCache` |
 | Preload window | The images the preload cache wants: the current image, 3 ahead and 1 behind in the direction of travel. | | `preload_window` |
-| Recursive open | Opening a folder together with all its subfolders (Shift+O); sets the sort mode to shuffle. | | |
+| Recursive open | Opening a folder together with all its subfolders (Shift+O); takes the chosen order, or shuffles when none is chosen. | | |
 | Screen rotation | Turning how the current image is drawn by 90°. Never written to the file; lasts until the app closes. | lossless rotation, EXIF rotation | |
-| Session restore | On startup, reopening the last image list, current image, sort mode, shuffle order and window placement, kept in `superslide-session.toml` beside the executable. | | `Session`; where the window reopens, `Placement` |
+| Session restore | On startup, reopening the last image list, current image, sort mode, shuffle order and window placement, and bringing back the chosen order, kept in `superslide-session.toml` beside the executable. | | `Session`; where the window reopens, `Placement` |
 | Shuffle | The sort mode that gives the image list a random order, kept until the next shuffle. | random | |
 | Slideshow | Timed automatic advance to the next image, toggled with A. | | `Slideshow` |
 | Sort mode | The image list's order: name (N), date (D), size (Z) or shuffle (S); V reverses it. | | `SortMode` |

@@ -171,6 +171,10 @@ struct Shown {
     /// The session's place in its image list while that list is being scanned again, so a
     /// session saved before the scan ends keeps it.
     resuming: Option<Resume>,
+    /// The order last chosen with a sort key, which every open takes (`Open::order`). A
+    /// route's default never sets it, so a first shuffled recursive open does not shuffle the
+    /// next plain one. Kept in the session.
+    chosen_order: Option<Order>,
     /// Where the window last was while neither fullscreen, maximised nor minimised.
     placement: Option<Placement>,
     /// The preferences screen, while it is open. Like the help overlay, it takes all input
@@ -255,6 +259,7 @@ impl App {
         self.scan = Some(Scan::spawn(
             open,
             &shown.preferences.folder_filter,
+            shown.chosen_order,
             resume,
             move |event| {
                 // Fails only once the event loop has exited, when nobody wants the result.
@@ -432,6 +437,7 @@ impl ApplicationHandler<AppEvent> for App {
             session_saved_at: None,
             opened: restoring.as_ref().map(|(open, _)| open.clone()),
             resuming: restoring.as_ref().map(|(_, resume)| resume.clone()),
+            chosen_order: session.order,
             placement,
             preferences_screen: None,
             showing,
@@ -793,6 +799,7 @@ impl Shown {
         Session {
             target_folder: self.target_folder.clone(),
             images,
+            order: self.chosen_order,
             window: self.placement.clone(),
         }
     }
@@ -1023,6 +1030,7 @@ impl Shown {
         };
         let order = change(images.order());
         images.set_order(order);
+        self.chosen_order = Some(order);
         self.session_changed = true;
         self.cache
             .reindex(images.entries().iter().map(|entry| entry.path.as_path()));

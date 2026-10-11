@@ -1,5 +1,5 @@
 //! What session restore brings back: the image list's opening, order and current image, the
-//! target folder for M and C, and the window's placement.
+//! order last chosen, the target folder for M and C, and the window's placement.
 
 use std::path::PathBuf;
 
@@ -22,6 +22,14 @@ pub struct Session {
     /// Where M and C last sent an image.
     pub target_folder: Option<PathBuf>,
     pub images: Option<Images>,
+    /// The order last chosen with a sort key, which new image lists take. Apart from the image
+    /// list's own order, so it outlives the list it was chosen on.
+    #[serde(
+        default,
+        with = "order::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub order: Option<Order>,
     pub window: Option<Placement>,
 }
 
@@ -212,6 +220,29 @@ mod order {
             grouped: fields.grouped,
         })
     }
+
+    /// For an `Option<Order>` field, as the same table when present.
+    pub mod option {
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+        use super::Order;
+
+        #[derive(Serialize, Deserialize)]
+        struct Table(#[serde(with = "super")] Order);
+
+        pub fn serialize<S: Serializer>(
+            order: &Option<Order>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            order.map(Table).serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<Order>, D::Error> {
+            Ok(Option::<Table>::deserialize(deserializer)?.map(|Table(order)| order))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +266,11 @@ mod tests {
                     grouped: true,
                 },
             }),
+            order: Some(Order {
+                mode: SortMode::By(SortKey::Date),
+                reversed: true,
+                grouped: false,
+            }),
             window: Some(Placement {
                 position: [2600, -8],
                 size: [1280, 720],
@@ -255,6 +291,19 @@ mod tests {
             toml::from_str::<Session>(&empty).unwrap(),
             Session::default()
         );
+    }
+
+    #[test]
+    fn a_session_without_a_chosen_order_loads_without_one() {
+        let text = toml::to_string(&Session {
+            order: None,
+            ..saved()
+        })
+        .unwrap();
+        assert!(!text.contains("[order]"), "{text}");
+        let loaded = toml::from_str::<Session>(&text).unwrap();
+        assert_eq!(loaded.order, None);
+        assert_eq!(loaded.images, saved().images);
     }
 
     #[test]

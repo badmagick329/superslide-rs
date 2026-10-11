@@ -34,6 +34,8 @@ Open images by dragging a file or folder onto the window, or press **O**. Next t
 
 Prefer Vim keys? Set **Keymap** to **Vim** in the preferences: j / k page, H J K L pan, `5j`, `gg` / `G`, `dd`, and Esc never quits. `m` marks images, and then `dd`, `x` (move), `c` (copy) and `y` act on all of them; `y` copies them as files, ready to paste into Discord or a folder.
 
+The order you pick sticks: every folder you open after it uses the same order, so D then V shows each one newest first.
+
 Move and copy never overwrite a file: if the folder already has one with that name, nothing happens and you get a notice.
 
 [All keys](docs/context/keymap.md)
