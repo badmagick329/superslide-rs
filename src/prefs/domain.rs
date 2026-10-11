@@ -22,7 +22,8 @@ pub const PRELOAD_BUDGET_MB: RangeInclusive<u32> = 64..=65_536;
 // A file from an older build that lacks a field still loads, with that field at its default.
 #[serde(default)]
 pub struct Preferences {
-    /// Shortest interval between image changes while Space or Backspace is held.
+    /// Shortest interval between image changes while a key that moves through the image list is
+    /// held.
     pub advance_limit_ms: u32,
     pub slideshow_interval_s: u32,
     /// Folder names skipped when opening a folder, matched case-insensitively.
@@ -33,6 +34,16 @@ pub struct Preferences {
     pub session_restore: bool,
     pub magnification_filter: MagnificationFilter,
     pub info_overlay: InfoOverlay,
+    pub keymap: Keymap,
+}
+
+/// Which set of key bindings is in use; `shell::keymap` implements both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Keymap {
+    /// The original SuperSlide's keys.
+    Classic,
+    Vim,
 }
 
 impl Default for Preferences {
@@ -46,6 +57,7 @@ impl Default for Preferences {
             session_restore: true,
             magnification_filter: MagnificationFilter::Linear,
             info_overlay: InfoOverlay::Hidden,
+            keymap: Keymap::Classic,
         }
     }
 }
@@ -108,11 +120,18 @@ mod tests {
     fn missing_fields_take_their_defaults() {
         let prefs: Preferences = toml::from_str("advance_limit_ms = 250").unwrap();
         assert_eq!(prefs.advance_limit_ms, 250);
+        assert_eq!(prefs.keymap, Keymap::Classic);
         assert_eq!(
             prefs.slideshow_interval_s,
             Preferences::default().slideshow_interval_s
         );
         assert_eq!(prefs.folder_filter, Preferences::default().folder_filter);
+    }
+
+    #[test]
+    fn the_keymap_is_stored_by_name() {
+        let prefs: Preferences = toml::from_str(r#"keymap = "vim""#).unwrap();
+        assert_eq!(prefs.keymap, Keymap::Vim);
     }
 
     #[test]

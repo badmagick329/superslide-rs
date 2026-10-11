@@ -10,7 +10,8 @@ use egui::{
 use crate::info_overlay::domain::InfoOverlay;
 use crate::prefs::domain::session::Session;
 use crate::prefs::domain::{
-    ADVANCE_LIMIT_MS, PRELOAD_BUDGET_MB, Preferences, SLIDESHOW_INTERVAL_S, Screen, folder_filter,
+    ADVANCE_LIMIT_MS, Keymap, PRELOAD_BUDGET_MB, Preferences, SLIDESHOW_INTERVAL_S, Screen,
+    folder_filter,
 };
 use crate::prefs::infrastructure::{LoadProblem, Stored};
 use crate::view::domain::MagnificationFilter;
@@ -27,6 +28,16 @@ const NOTE_SIZE: f32 = 14.0;
 const CHROME_HEIGHT: f32 = 120.0;
 const LABEL_SHARE: f32 = 0.3;
 const COLUMN_GAP: f32 = 16.0;
+
+/// The keys the screen's notes name, in the keymap in use.
+pub struct PreferenceKeys {
+    /// Closes the screen, such as `P or Esc`.
+    pub close: &'static str,
+    /// Moves through the image list while held, paced by the advance limit.
+    pub advance: &'static str,
+    pub magnification: &'static str,
+    pub info: &'static str,
+}
 
 pub fn load_problem(problem: &LoadProblem) -> String {
     match problem {
@@ -67,8 +78,14 @@ pub fn session_save_failed(error: &io::Error) -> String {
 }
 
 /// Centred across the image, its top a twentieth of the way down. Every
-/// change lands in `preferences` on the frame it is made; the caller applies it.
-pub fn show(ctx: &egui::Context, preferences: &mut Preferences, screen: &mut Screen) {
+/// change lands in `preferences` on the frame it is made; the caller applies it. `keys` follow
+/// the keymap the screen opened with; a keymap change shows in them from the next frame.
+pub fn show(
+    ctx: &egui::Context,
+    preferences: &mut Preferences,
+    screen: &mut Screen,
+    keys: &PreferenceKeys,
+) {
     let window = ctx.content_rect();
     let width = (window.width() * MAX_WIDTH_SHARE).min(MAX_WIDTH) - 2.0 * f32::from(MARGIN);
     let height = window.height() * MAX_HEIGHT_SHARE;
@@ -103,13 +120,16 @@ pub fn show(ctx: &egui::Context, preferences: &mut Preferences, screen: &mut Scr
                     ui.label(RichText::new("Preferences").strong().color(Color32::WHITE));
                     note(
                         ui,
-                        "Changes apply at once and are saved when this closes · P or Esc closes",
+                        &format!(
+                            "Changes apply at once and are saved when this closes · {} closes",
+                            keys.close
+                        ),
                     );
                     ui.add_space(8.0);
                     ScrollArea::vertical()
                         .max_height((height - CHROME_HEIGHT).max(TEXT_SIZE * 4.0))
                         .auto_shrink([false, true])
-                        .show(ui, |ui| rows(ui, preferences, screen, width));
+                        .show(ui, |ui| rows(ui, preferences, screen, keys, width));
                     ui.add_space(8.0);
                     if ui.button("Reset to defaults").clicked() {
                         *preferences = Preferences::default();
@@ -119,7 +139,13 @@ pub fn show(ctx: &egui::Context, preferences: &mut Preferences, screen: &mut Scr
         });
 }
 
-fn rows(ui: &mut egui::Ui, preferences: &mut Preferences, screen: &mut Screen, width: f32) {
+fn rows(
+    ui: &mut egui::Ui,
+    preferences: &mut Preferences,
+    screen: &mut Screen,
+    keys: &PreferenceKeys,
+    width: f32,
+) {
     let label_width = width * LABEL_SHARE;
     let value_width = width - label_width - COLUMN_GAP;
     Grid::new("preference rows")
@@ -128,7 +154,7 @@ fn rows(ui: &mut egui::Ui, preferences: &mut Preferences, screen: &mut Screen, w
         .max_col_width(value_width)
         .spacing([COLUMN_GAP, 6.0])
         .show(ui, |ui| {
-            row(ui, "Advance limit", "Held Space or Backspace", |ui| {
+            row(ui, "Advance limit", keys.advance, |ui| {
                 ui.add(
                     DragValue::new(&mut preferences.advance_limit_ms)
                         .range(ADVANCE_LIMIT_MS)
@@ -178,16 +204,21 @@ fn rows(ui: &mut egui::Ui, preferences: &mut Preferences, screen: &mut Screen, w
                     ui.checkbox(&mut preferences.session_restore, "");
                 },
             );
-            row(ui, "Magnification", "Ctrl+F", |ui| {
+            row(ui, "Magnification", keys.magnification, |ui| {
                 let filter = &mut preferences.magnification_filter;
                 ui.radio_value(filter, MagnificationFilter::Linear, "Smooth");
                 ui.radio_value(filter, MagnificationFilter::Nearest, "Sharp pixels");
             });
-            row(ui, "Info overlay", "I", |ui| {
+            row(ui, "Info overlay", keys.info, |ui| {
                 let mode = &mut preferences.info_overlay;
                 ui.radio_value(mode, InfoOverlay::Hidden, "Hidden");
                 ui.radio_value(mode, InfoOverlay::FileName, "File name");
                 ui.radio_value(mode, InfoOverlay::Full, "Full");
+            });
+            row(ui, "Keymap", "? lists its keys", |ui| {
+                let keymap = &mut preferences.keymap;
+                ui.radio_value(keymap, Keymap::Classic, "Classic");
+                ui.radio_value(keymap, Keymap::Vim, "Vim");
             });
         });
 }

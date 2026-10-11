@@ -12,12 +12,13 @@ const LOGO_SIZE: f32 = 96.0;
 const TITLE_SIZE: f32 = 30.0;
 const TEXT_SIZE: f32 = 18.0;
 
-/// Keys first, as on the help overlay. Only what a first run needs; `?` lists the rest.
-const OPENINGS: [(&str, &str); 3] = [
-    ("O", "Open an image and the rest of its folder"),
-    ("Shift+O", "Open a folder and all its subfolders"),
-    ("?", "List every key"),
-];
+/// The keys the welcome screen names, in the keymap in use. Only what a first run needs; the
+/// help key lists the rest.
+pub struct OpeningKeys {
+    pub file: &'static str,
+    pub folder: &'static str,
+    pub help: &'static str,
+}
 
 /// Uploads the logo once, at startup; egui frees it when the handle drops.
 pub fn load_logo(ctx: &egui::Context) -> TextureHandle {
@@ -31,7 +32,13 @@ pub fn load_logo(ctx: &egui::Context) -> TextureHandle {
 
 /// Centred on the black window. It takes no input, so the keys it names work as they read, and
 /// notices draw over it.
-pub fn show(ctx: &egui::Context, logo: &TextureHandle) {
+pub fn show(ctx: &egui::Context, logo: &TextureHandle, keys: &OpeningKeys) {
+    // Keys first, as on the help overlay.
+    let openings = [
+        (keys.file, "Open an image and the rest of its folder"),
+        (keys.folder, "Open a folder and all its subfolders"),
+        (keys.help, "List every key"),
+    ];
     egui::Area::new(egui::Id::new("welcome"))
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .order(egui::Order::Background)
@@ -58,7 +65,7 @@ pub fn show(ctx: &egui::Context, logo: &TextureHandle) {
                     .num_columns(2)
                     .spacing([12.0, 10.0])
                     .show(ui, |ui| {
-                        for (keys, action) in OPENINGS {
+                        for (keys, action) in openings {
                             // Right-aligned, so every key sits against its action.
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 key_cap(ui, keys)

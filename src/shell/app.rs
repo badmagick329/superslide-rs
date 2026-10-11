@@ -17,7 +17,7 @@ use winit::window::{Fullscreen, Icon, Window, WindowId};
 
 use crate::browse::domain::advance::AdvanceLimit;
 use crate::browse::domain::slideshow::Slideshow;
-use crate::browse::domain::{Direction, ImageList, Order, Resume, SortMode, folder};
+use crate::browse::domain::{Direction, ImageList, Order, Resume, SortMode, Travel, folder};
 use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
 use crate::browse::presentation::describe;
 use crate::clipboard::infrastructure::{ClipboardThread, Done, Loading, Request};
@@ -43,7 +43,7 @@ use crate::prefs::domain::{Preferences, Screen};
 use crate::prefs::infrastructure::TomlFile;
 use crate::prefs::presentation as preferences;
 use crate::shell::command::Command;
-use crate::shell::keymap::{self, HelpKey};
+use crate::shell::keymap::{self, HelpKey, Keys};
 use crate::shell::render::{self, ImageTexture, Renderer, UiFrame};
 use crate::view::domain::{MagnificationFilter, View};
 use crate::welcome::presentation as welcome;
@@ -206,6 +206,7 @@ struct Shown {
     /// When egui asked to be run again. It does after a new area's first frame, which it spends
     /// measuring the area with nothing visible.
     egui_repaint_at: Option<Instant>,
+    keys: Keys,
     mouse: keymap::Mouse,
     modifiers: ModifiersState,
     /// Last known cursor position in window pixels; wheel zoom anchors here.
@@ -397,6 +398,7 @@ impl ApplicationHandler<AppEvent> for App {
         renderer.magnification_filter = preferences.magnification_filter;
         let budget = u64::from(preferences.preload_budget_mb) << 20;
         let advance_limit = Duration::from_millis(preferences.advance_limit_ms.into());
+        let keys = Keys::new(preferences.keymap);
         let slideshow_interval = Duration::from_secs(preferences.slideshow_interval_s.into());
         let egui = egui::Context::default();
         let egui_input = egui_winit::State::new(
@@ -442,6 +444,7 @@ impl ApplicationHandler<AppEvent> for App {
             egui_input,
             notices: Notices::default(),
             egui_repaint_at: None,
+            keys,
             mouse: keymap::Mouse::default(),
             modifiers: ModifiersState::empty(),
             cursor: [0.0, 0.0],
@@ -543,12 +546,19 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::ModifiersChanged(modifiers) => shown.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } => match event.state {
                 ElementState::Pressed => {
+                    let pending = shown.keys.pending();
                     let command =
-                        keymap::for_key(&event.logical_key, shown.modifiers, event.repeat);
+                        shown
+                            .keys
+                            .pressed(&event.logical_key, shown.modifiers, event.repeat);
+                    // The corner shows a count or half-typed key as it changes.
+                    if shown.keys.pending() != pending {
+                        shown.window.request_redraw();
+                    }
                     self.run(command, event_loop);
                 }
                 ElementState::Released => {
-                    if let Some(direction) = keymap::released(&event.logical_key) {
+                    if let Some(direction) = shown.keys.released(&event.logical_key) {
                         shown.advance.released(direction);
                     }
                 }
@@ -600,11 +610,11 @@ impl ApplicationHandler<AppEvent> for App {
         let now = Instant::now();
         shown.read_placement();
         let session_at = shown.save_session_when_due(now);
-        if let Some(direction) = shown.advance.tick(now) {
-            shown.navigate(direction);
+        if let Some(travel) = shown.advance.tick(now) {
+            shown.travel(travel);
         }
         if shown.slideshow.tick(now, shown.next_ready()) {
-            shown.navigate(Direction::Forward);
+            shown.travel(Travel::Step(Direction::Forward));
         }
         if let Some(waiting) = &mut shown.waiting
             && !waiting.noticed
@@ -656,7 +666,10 @@ impl Shown {
                 if egui_keeps {
                     return false;
                 }
-                match keymap::for_help_key(&event.logical_key, self.modifiers, event.repeat) {
+                match self
+                    .keys
+                    .help_key(&event.logical_key, self.modifiers, event.repeat)
+                {
                     Some(HelpKey::Close) => self.help = None,
                     Some(HelpKey::FocusFilter) => open.focus_filter = true,
                     Some(HelpKey::Scroll(by)) => open.scroll(by),
@@ -686,7 +699,10 @@ impl Shown {
                 if egui_keeps {
                     return false;
                 }
-                if keymap::closes_preferences(&event.logical_key, self.modifiers, event.repeat) {
+                if self
+                    .keys
+                    .closes_preferences(&event.logical_key, self.modifiers, event.repeat)
+                {
                     self.preferences_screen = None;
                     self.save_preferences();
                 }
@@ -708,6 +724,7 @@ impl Shown {
         self.cache
             .set_budget(u64::from(preferences.preload_budget_mb) << 20);
         self.renderer.magnification_filter = preferences.magnification_filter;
+        self.keys.set_keymap(preferences.keymap);
     }
 
     /// Writes the preferences file if they changed. Only a run's first failure gives a notice.
@@ -830,15 +847,66 @@ impl Shown {
         self.show_current(now);
     }
 
-    fn navigate(&mut self, direction: Direction) {
+    fn travel(&mut self, travel: Travel) {
+        let Some(images) = &mut self.images else {
+            return;
+        };
+        if self.pasted {
+            return self.leave_clipboard(travel.direction());
+        }
+        match travel {
+            Travel::Step(direction) => {
+                let wrapped = images.step(direction);
+                self.moved(direction, wrapped);
+            }
+            Travel::Skip(direction, images_along) => {
+                if images.skip(direction, images_along) {
+                    return self.moved(direction, false);
+                }
+                // Stopped at an end rather than wrapping; without a notice the key would seem
+                // dead.
+                let text = match direction {
+                    Direction::Forward => "Already at the last image",
+                    Direction::Backward => "Already at the first image",
+                };
+                self.notices.notify(text, Instant::now());
+                self.window.request_redraw();
+            }
+        }
+    }
+
+    /// Vim's `[count]G`; `position` counts from 1, as the info overlay's does.
+    fn go_to(&mut self, position: usize) {
+        let Some(images) = &mut self.images else {
+            return;
+        };
+        let from = images.current_position();
+        let changed = images.go_to(position.saturating_sub(1));
+        let direction = match images.current_position() >= from {
+            true => Direction::Forward,
+            false => Direction::Backward,
+        };
+        // From the clipboard image, any go-to leaves it, even for the image it covered.
+        if changed || self.pasted {
+            self.pasted = false;
+            self.moved(direction, false);
+        }
+    }
+
+    /// Vim's `gg` and `G`. From the clipboard image, like a group jump, only back to the image
+    /// it covered.
+    fn jump_group_or_end(&mut self, direction: Direction) {
         let Some(images) = &mut self.images else {
             return;
         };
         if self.pasted {
             return self.leave_clipboard(direction);
         }
-        let wrapped = images.step(direction);
-        self.moved(direction, wrapped);
+        let from = images.current_position();
+        let wrapped = images.jump_group_or_end(direction);
+        if images.current_position() != from {
+            self.moved(direction, wrapped);
+        }
     }
 
     /// Does nothing unless grouped by subfolder.
@@ -1250,6 +1318,9 @@ impl Shown {
         };
         let showing = &self.showing;
         let welcoming = self.welcoming().then_some(&self.welcome_logo);
+        let hints = self.keys.hints();
+        let bindings = self.keys.bindings();
+        let pending = self.keys.pending();
         let shown_notices = &mut self.notices;
         let open_help = &mut self.help;
         let before = self
@@ -1260,7 +1331,7 @@ impl Shown {
         let screen = &mut self.preferences_screen;
         let output = self.egui.run_ui(input, |ui| {
             if let Some(logo) = welcoming {
-                welcome::show(ui.ctx(), logo);
+                welcome::show(ui.ctx(), logo, &hints.openings);
             }
             if let Showing::Error {
                 file_name, reason, ..
@@ -1272,11 +1343,14 @@ impl Shown {
                 info_overlay::show(ui.ctx(), info_mode, details);
             }
             if let Some(open) = open_help {
-                let rows: Vec<Binding> = keymap::BINDINGS.iter().map(|row| row.binding).collect();
-                help::show(ui.ctx(), open, &rows);
+                let rows: Vec<Binding> = bindings.iter().map(|row| row.binding).collect();
+                help::show(ui.ctx(), open, &rows, hints.help);
             }
             if let Some(screen) = screen {
-                preferences::show(ui.ctx(), edited, screen);
+                preferences::show(ui.ctx(), edited, screen, &hints.preferences);
+            }
+            if let Some(pending) = &pending {
+                help::show_pending(ui.ctx(), pending);
             }
             notices::show(shown_notices, ui.ctx(), now);
         });
@@ -1313,21 +1387,28 @@ impl Shown {
             Command::ToggleFullscreen if !fullscreen => self
                 .window
                 .set_fullscreen(Some(Fullscreen::Borderless(self.window.current_monitor()))),
-            Command::ToggleFullscreen | Command::LeaveFullscreenOrQuit if fullscreen => {
+            Command::ToggleFullscreen
+            | Command::LeaveFullscreenOrQuit
+            | Command::LeaveFullscreen
+                if fullscreen =>
+            {
                 self.window.set_fullscreen(None)
             }
-            Command::LeaveFullscreenOrQuit => event_loop.exit(),
+            Command::LeaveFullscreenOrQuit | Command::Quit => event_loop.exit(),
+            Command::LeaveFullscreen => return,
             // Each shows the image itself once it is ready; nothing to redraw until then.
-            Command::Advance { direction, repeat } => {
+            Command::Advance { travel, repeat } => {
                 let now = Instant::now();
                 if !repeat {
                     self.advance.pressed(now);
-                } else if !self.advance.repeated(direction, now) {
+                } else if !self.advance.repeated(travel, now) {
                     return;
                 }
-                return self.navigate(direction);
+                return self.travel(travel);
             }
             Command::JumpGroup(direction) => return self.jump_group(direction),
+            Command::JumpGroupOrEnd(direction) => return self.jump_group_or_end(direction),
+            Command::GoTo(position) => return self.go_to(position),
             Command::DeleteToRecycleBin => return self.act(None),
             Command::Transfer(transfer) => return self.act(Some(transfer)),
             Command::CopyToClipboard => return self.copy(),

@@ -23,8 +23,9 @@ const TEXT_SIZE: f32 = 16.0;
 const CHROME_HEIGHT: f32 = 110.0;
 
 /// Centred across the image, its top a tenth of the way down, so filtering shortens it without
-/// moving the filter box. Notices draw in the foreground, over it.
-pub fn show(ctx: &egui::Context, help: &mut Help, rows: &[Binding]) {
+/// moving the filter box. Notices draw in the foreground, over it. `hint` names the keys that
+/// scroll and close it.
+pub fn show(ctx: &egui::Context, help: &mut Help, rows: &[Binding], hint: &str) {
     let screen = ctx.content_rect();
     let width = (screen.width() * MAX_WIDTH_SHARE).min(MAX_WIDTH) - 2.0 * f32::from(MARGIN);
     let height = screen.height() * MAX_HEIGHT_SHARE;
@@ -52,11 +53,9 @@ pub fn show(ctx: &egui::Context, help: &mut Help, rows: &[Binding]) {
                     filter_box(ui, help);
                     ui.add(
                         Label::new(
-                            RichText::new(
-                                "Wheel, arrows, PgUp / PgDn, Home / End scroll · Esc closes",
-                            )
-                            .size(TEXT_SIZE - 2.0)
-                            .color(Color32::GRAY),
+                            RichText::new(hint)
+                                .size(TEXT_SIZE - 2.0)
+                                .color(Color32::GRAY),
                         )
                         .wrap(),
                     );
@@ -164,4 +163,28 @@ fn title(section: Section) -> &'static str {
         Section::Clipboard => "Clipboard",
         Section::Window => "Window",
     }
+}
+
+/// A Vim count or half-typed key, in the bottom-right corner as Vim shows it, until the binding
+/// completes or Esc clears it. The info overlay has the bottom-left, notices the top-right.
+pub fn show_pending(ctx: &egui::Context, keys: &str) {
+    egui::Area::new(egui::Id::new("pending keys"))
+        .anchor(Align2::RIGHT_BOTTOM, [-12.0, -12.0])
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(Color32::from_black_alpha(240))
+                .corner_radius(CornerRadius::same(4))
+                .inner_margin(Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(keys)
+                            .size(TEXT_SIZE + 4.0)
+                            .monospace()
+                            .color(Color32::WHITE),
+                    );
+                });
+        });
 }

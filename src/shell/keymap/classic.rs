@@ -1,29 +1,34 @@
-//! Maps keys and mouse gestures to [`Command`]. The only place bindings are decided: `for_key`,
-//! `for_wheel` and `Mouse` decide them, and [`BINDINGS`] describes them for the help overlay. Tests
-//! hold those two and `docs/context/keymap.md` together, so none can change alone.
+//! The classic keymap: the original SuperSlide's keys, one press per binding.
 
-use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use super::{
+    CLICK_NEXT, CLICK_PREVIOUS, DRAG_PAN, DRAG_ZOOM, HelpKey, Hints, Input, Probe, Row, WHEEL_ZOOM,
+    ZOOM_STEP, advance, help_scroll, pan_key, row, zoom,
+};
 use crate::browse::domain::{Direction, SortKey};
 use crate::file_actions::domain::Transfer;
-use crate::help::domain::{Binding, Scroll, Section};
+use crate::help::domain::Section;
+use crate::prefs::presentation::PreferenceKeys;
 use crate::shell::command::Command;
-use crate::view::domain::{Anchor, PanBy, Turn};
+use crate::view::domain::Turn;
+use crate::welcome::presentation::OpeningKeys;
 
-/// Zoom per wheel notch and per + / - press.
-const ZOOM_STEP: f32 = 1.25;
-/// Share of the window one arrow press pans.
-const ARROW_PAN: f32 = 0.1;
-/// Movement while a button is down, in window pixels, that still counts as a click. Hands
-/// jitter; a click must not nudge the image.
-const CLICK_SLOP: f32 = 4.0;
-/// Upward right-drag distance, in window pixels, that doubles the zoom.
-const DRAG_PX_PER_DOUBLING: f32 = 200.0;
-/// Touchpads report pixels, not notches; this many count as one notch.
-const PIXELS_PER_NOTCH: f32 = 50.0;
+pub const HINTS: Hints = Hints {
+    openings: OpeningKeys {
+        file: "O",
+        folder: "Shift+O",
+        help: "?",
+    },
+    help: "Wheel, arrows, PgUp / PgDn, Home / End scroll · Esc closes",
+    preferences: PreferenceKeys {
+        close: "P or Esc",
+        advance: "Held Space or Backspace",
+        magnification: "Ctrl+F",
+        info: "I",
+    },
+};
 
-/// The command a key press runs, if any. `repeat` is true for auto-repeat while the key is held.
 pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Command> {
     let ctrl = modifiers.control_key();
     let plain = !ctrl && !modifiers.alt_key();
@@ -47,16 +52,7 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
             | NamedKey::ArrowRight
             | NamedKey::ArrowUp
             | NamedKey::ArrowDown),
-        ) if plain => {
-            // Arrows scroll the view: Right shows more of the right side, so the image moves left.
-            let (dx, dy) = match arrow {
-                NamedKey::ArrowLeft => (ARROW_PAN, 0.0),
-                NamedKey::ArrowRight => (-ARROW_PAN, 0.0),
-                NamedKey::ArrowUp => (0.0, ARROW_PAN),
-                _ => (0.0, -ARROW_PAN),
-            };
-            (Command::Pan(PanBy::WindowFraction { dx, dy }), true)
-        }
+        ) if plain => (pan_key(*arrow), true),
         Key::Character(c) => {
             // Shift changes the character ("=" to "+", "r" to "R"), so it is not checked; the
             // unshifted "=" counts as + so zooming in needs no Shift.
@@ -102,39 +98,22 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
     (repeats || !repeat).then_some(command)
 }
 
-/// What a key press does while the help overlay is open and its filter box is not focused.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum HelpKey {
-    Close,
-    FocusFilter,
-    Scroll(Scroll),
-}
-
-/// While the help overlay is open it takes every key: the ones below act on it, and every other
-/// key does nothing, so a key pressed at the list never runs its binding underneath.
 pub fn for_help_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<HelpKey> {
-    let scroll = match key {
-        Key::Named(NamedKey::ArrowUp) => Scroll::Lines(-1.0),
-        Key::Named(NamedKey::ArrowDown) => Scroll::Lines(1.0),
-        Key::Named(NamedKey::PageUp) => Scroll::Pages(-1.0),
-        Key::Named(NamedKey::PageDown) => Scroll::Pages(1.0),
-        Key::Named(NamedKey::Home) => Scroll::Top,
-        Key::Named(NamedKey::End) => Scroll::Bottom,
+    if let Some(scroll) = help_scroll(key) {
+        return Some(HelpKey::Scroll(scroll));
+    }
+    match key {
         // Esc closes rather than leaving fullscreen or quitting; ? and / keep their bindings.
-        Key::Named(NamedKey::Escape) => return (!repeat).then_some(HelpKey::Close),
-        _ => {
-            return match for_key(key, modifiers, repeat)? {
-                Command::ToggleHelp => Some(HelpKey::Close),
-                Command::FocusHelpFilter => Some(HelpKey::FocusFilter),
-                _ => None,
-            };
-        }
-    };
-    Some(HelpKey::Scroll(scroll))
+        Key::Named(NamedKey::Escape) => (!repeat).then_some(HelpKey::Close),
+        _ => match for_key(key, modifiers, repeat)? {
+            Command::ToggleHelp => Some(HelpKey::Close),
+            Command::FocusHelpFilter => Some(HelpKey::FocusFilter),
+            _ => None,
+        },
+    }
 }
 
-/// While the preferences screen is open it takes every key; P and Esc close it, and every other
-/// key does nothing unless one of its fields has focus, when egui types it.
+/// P and Esc close the preferences screen.
 pub fn closes_preferences(key: &Key, modifiers: ModifiersState, repeat: bool) -> bool {
     match key {
         // Esc closes rather than leaving fullscreen or quitting.
@@ -143,18 +122,6 @@ pub fn closes_preferences(key: &Key, modifiers: ModifiersState, repeat: bool) ->
     }
 }
 
-/// Lines the help overlay scrolls per wheel notch.
-const HELP_LINES_PER_NOTCH: f32 = 3.0;
-
-/// The wheel scrolls the help overlay, wherever the cursor is, instead of zooming.
-pub fn for_help_wheel(delta: MouseScrollDelta) -> Option<Scroll> {
-    let notches = notches(delta);
-    // Wheel up gives positive notches and scrolls towards the top.
-    (notches != 0.0).then(|| Scroll::Lines(-notches * HELP_LINES_PER_NOTCH))
-}
-
-/// Space or Backspace let go, whatever the modifiers: a repeat waiting under the advance limit
-/// must not advance after it.
 pub fn released(key: &Key) -> Option<Direction> {
     match key {
         Key::Named(NamedKey::Space) => Some(Direction::Forward),
@@ -163,128 +130,6 @@ pub fn released(key: &Key) -> Option<Direction> {
     }
 }
 
-const fn advance(direction: Direction, repeat: bool) -> Command {
-    Command::Advance { direction, repeat }
-}
-
-const fn zoom(factor: f32) -> Command {
-    Command::Zoom {
-        factor,
-        anchor: Anchor::Centre,
-    }
-}
-
-/// Wheel up zooms in, about the cursor.
-pub fn for_wheel(delta: MouseScrollDelta, cursor: [f32; 2]) -> Option<Command> {
-    let notches = notches(delta);
-    (notches != 0.0).then(|| Command::Zoom {
-        factor: ZOOM_STEP.powf(notches),
-        anchor: Anchor::Cursor {
-            x: cursor[0],
-            y: cursor[1],
-        },
-    })
-}
-
-fn notches(delta: MouseScrollDelta) -> f32 {
-    match delta {
-        MouseScrollDelta::LineDelta(_, y) => y,
-        MouseScrollDelta::PixelDelta(p) => p.y as f32 / PIXELS_PER_NOTCH,
-    }
-}
-
-/// Tells clicks from drags. A press becomes a drag once the cursor strays more than
-/// `CLICK_SLOP` from where it went down; until then nothing moves, and a release is a click.
-#[derive(Debug, Default)]
-pub struct Mouse {
-    held: Option<Held>,
-}
-
-#[derive(Debug)]
-struct Held {
-    button: MouseButton,
-    down_at: [f32; 2],
-    last: [f32; 2],
-    dragging: bool,
-}
-
-impl Mouse {
-    /// A second button pressed while one is held is ignored, so each gesture has one meaning.
-    pub fn pressed(&mut self, button: MouseButton, at: [f32; 2]) {
-        if self.held.is_none() && matches!(button, MouseButton::Left | MouseButton::Right) {
-            self.held = Some(Held {
-                button,
-                down_at: at,
-                last: at,
-                dragging: false,
-            });
-        }
-    }
-
-    pub fn moved(&mut self, at: [f32; 2]) -> Option<Command> {
-        let held = self.held.as_mut()?;
-        if !held.dragging {
-            let [dx, dy] = [at[0] - held.down_at[0], at[1] - held.down_at[1]];
-            if dx.hypot(dy) <= CLICK_SLOP {
-                return None;
-            }
-            // The first drag step covers the slop too, so the image stays under the cursor.
-            held.dragging = true;
-        }
-        let [dx, dy] = [at[0] - held.last[0], at[1] - held.last[1]];
-        held.last = at;
-        Some(match held.button {
-            MouseButton::Left => Command::Pan(PanBy::Pixels { dx, dy }),
-            // Up zooms in, about the point where the drag started.
-            _ => Command::Zoom {
-                factor: 2f32.powf(-dy / DRAG_PX_PER_DOUBLING),
-                anchor: Anchor::Cursor {
-                    x: held.down_at[0],
-                    y: held.down_at[1],
-                },
-            },
-        })
-    }
-
-    pub fn released(&mut self, button: MouseButton) -> Option<Command> {
-        let held = self.held.take_if(|held| held.button == button)?;
-        if held.dragging {
-            return None;
-        }
-        Some(match button {
-            MouseButton::Left => advance(Direction::Backward, false),
-            _ => advance(Direction::Forward, false),
-        })
-    }
-}
-
-/// One row of the keymap: the binding as the help overlay shows it, and sample inputs with the
-/// command each must give.
-pub struct Row {
-    pub binding: Binding,
-    /// Run through `for_key`, `for_wheel` and `Mouse` by the tests; every row has at least one.
-    #[cfg_attr(not(test), expect(dead_code, reason = "only tests replay probes"))]
-    probes: &'static [Probe],
-}
-
-/// An input a test can replay, with the command it must give.
-#[cfg_attr(not(test), expect(dead_code, reason = "only tests replay probes"))]
-struct Probe(Input, Command);
-
-#[cfg_attr(not(test), expect(dead_code, reason = "only tests replay probes"))]
-enum Input {
-    Named(NamedKey, ModifiersState),
-    Char(&'static str, ModifiersState),
-    /// Press and release at `PROBE_AT` without moving.
-    Click(MouseButton),
-    /// Press at `PROBE_AT`, then move by the offset.
-    Drag(MouseButton, [f32; 2]),
-    /// Wheel notches with the cursor at `PROBE_AT`.
-    Wheel(f32),
-}
-
-/// Where mouse probes happen, so the commands they expect can name their anchor.
-const PROBE_AT: [f32; 2] = [100.0, 100.0];
 const NONE: ModifiersState = ModifiersState::empty();
 const CTRL: ModifiersState = ModifiersState::CONTROL;
 
@@ -296,37 +141,8 @@ const fn char(c: &'static str, modifiers: ModifiersState, command: Command) -> P
     Probe(Input::Char(c, modifiers), command)
 }
 
-const fn row(
-    keys: &'static str,
-    action: &'static str,
-    section: Section,
-    probes: &'static [Probe],
-) -> Row {
-    Row {
-        binding: Binding {
-            keys,
-            action,
-            section,
-        },
-        probes,
-    }
-}
-
-const fn pan_by(dx: f32, dy: f32) -> Command {
-    Command::Pan(PanBy::WindowFraction { dx, dy })
-}
-
-const fn zoom_at_probe(factor: f32) -> Command {
-    Command::Zoom {
-        factor,
-        anchor: Anchor::Cursor {
-            x: PROBE_AT[0],
-            y: PROBE_AT[1],
-        },
-    }
-}
-
-/// Every binding, in the order of `docs/context/keymap.md`'s table, each section in one run.
+/// Every binding, in the order of `docs/context/keymap.md`'s classic table, each section in one
+/// run.
 pub const BINDINGS: &[Row] = &[
     row(
         "Space, right click",
@@ -334,10 +150,7 @@ pub const BINDINGS: &[Row] = &[
         Section::Navigate,
         &[
             named(NamedKey::Space, NONE, advance(Direction::Forward, false)),
-            Probe(
-                Input::Click(MouseButton::Right),
-                advance(Direction::Forward, false),
-            ),
+            CLICK_NEXT,
         ],
     ),
     row(
@@ -350,10 +163,7 @@ pub const BINDINGS: &[Row] = &[
                 NONE,
                 advance(Direction::Backward, false),
             ),
-            Probe(
-                Input::Click(MouseButton::Left),
-                advance(Direction::Backward, false),
-            ),
+            CLICK_PREVIOUS,
         ],
     ),
     row(
@@ -384,14 +194,11 @@ pub const BINDINGS: &[Row] = &[
         "Pan",
         Section::View,
         &[
-            Probe(
-                Input::Drag(MouseButton::Left, [10.0, 0.0]),
-                Command::Pan(PanBy::Pixels { dx: 10.0, dy: 0.0 }),
-            ),
-            named(NamedKey::ArrowLeft, NONE, pan_by(ARROW_PAN, 0.0)),
-            named(NamedKey::ArrowRight, NONE, pan_by(-ARROW_PAN, 0.0)),
-            named(NamedKey::ArrowUp, NONE, pan_by(0.0, ARROW_PAN)),
-            named(NamedKey::ArrowDown, NONE, pan_by(0.0, -ARROW_PAN)),
+            DRAG_PAN,
+            named(NamedKey::ArrowLeft, NONE, pan_key(NamedKey::ArrowLeft)),
+            named(NamedKey::ArrowRight, NONE, pan_key(NamedKey::ArrowRight)),
+            named(NamedKey::ArrowUp, NONE, pan_key(NamedKey::ArrowUp)),
+            named(NamedKey::ArrowDown, NONE, pan_key(NamedKey::ArrowDown)),
         ],
     ),
     row(
@@ -399,11 +206,8 @@ pub const BINDINGS: &[Row] = &[
         "Zoom (+ / - and each wheel notch: 1.25×; = also zooms in)",
         Section::View,
         &[
-            Probe(
-                Input::Drag(MouseButton::Right, [0.0, -DRAG_PX_PER_DOUBLING]),
-                zoom_at_probe(2.0),
-            ),
-            Probe(Input::Wheel(1.0), zoom_at_probe(ZOOM_STEP)),
+            DRAG_ZOOM,
+            WHEEL_ZOOM,
             char("+", NONE, zoom(ZOOM_STEP)),
             char("=", NONE, zoom(ZOOM_STEP)),
             char("-", NONE, zoom(1.0 / ZOOM_STEP)),
@@ -559,36 +363,34 @@ pub const BINDINGS: &[Row] = &[
 ];
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+    use crate::browse::domain::Travel;
+    use crate::help::domain::Scroll;
+    use crate::shell::keymap::tests::replay_mouse;
+    use crate::view::domain::Anchor;
 
-    fn replay(input: &Input) -> Option<Command> {
-        let mut mouse = Mouse::default();
+    pub fn replay(input: &Input) -> Option<Command> {
+        if let Some(command) = replay_mouse(input) {
+            return command;
+        }
         match *input {
             Input::Named(key, modifiers) => for_key(&Key::Named(key), modifiers, false),
             Input::Char(c, modifiers) => for_key(&Key::Character(c.into()), modifiers, false),
-            Input::Click(button) => {
-                mouse.pressed(button, PROBE_AT);
-                mouse.released(button)
-            }
-            Input::Drag(button, [dx, dy]) => {
-                mouse.pressed(button, PROBE_AT);
-                mouse.moved([PROBE_AT[0] + dx, PROBE_AT[1] + dy])
-            }
-            Input::Wheel(notches) => for_wheel(MouseScrollDelta::LineDelta(0.0, notches), PROBE_AT),
+            _ => panic!("the classic keymap has no Vim key probes"),
         }
     }
 
     /// The row each command belongs to. Exhaustive on purpose: a new command does not compile
     /// until it names its row, and the probe test then needs a probe there that gives it.
-    fn row_of(command: Command) -> &'static str {
+    pub fn row_of(command: Command) -> &'static str {
         match command {
             Command::Advance {
-                direction: Direction::Forward,
+                travel: Travel::Step(Direction::Forward),
                 ..
             } => "Space, right click",
             Command::Advance {
-                direction: Direction::Backward,
+                travel: Travel::Step(Direction::Backward),
                 ..
             } => "Backspace, left click",
             Command::JumpGroup(_) => "Ctrl+Right / Ctrl+Left",
@@ -618,21 +420,14 @@ mod tests {
             Command::FocusHelpFilter => "/",
             #[cfg(debug_assertions)]
             Command::TestNotice => "F9",
-        }
-    }
-
-    #[test]
-    fn every_probe_gives_its_command_on_its_row() {
-        for row in BINDINGS {
-            let keys = row.binding.keys;
-            for Probe(input, command) in row.probes {
-                assert_eq!(replay(input), Some(*command), "probe on row {keys}");
-                assert_eq!(
-                    row_of(*command),
-                    keys,
-                    "{command:?} probed on the wrong row"
-                );
+            Command::Advance {
+                travel: Travel::Skip(..),
+                ..
             }
+            | Command::JumpGroupOrEnd(_)
+            | Command::GoTo(_)
+            | Command::LeaveFullscreen
+            | Command::Quit => unreachable!("{command:?} is Vim only"),
         }
     }
 
@@ -665,11 +460,6 @@ mod tests {
             for_help_key(&Key::Named(NamedKey::Escape), none, true),
             None
         );
-        assert_eq!(
-            for_help_wheel(MouseScrollDelta::LineDelta(0.0, -1.0)),
-            Some(Scroll::Lines(3.0)),
-            "wheel down scrolls down"
-        );
     }
 
     #[test]
@@ -690,109 +480,6 @@ mod tests {
             ModifiersState::CONTROL,
             false
         ));
-    }
-
-    #[test]
-    fn every_row_has_probes() {
-        let unprobed: Vec<_> = BINDINGS
-            .iter()
-            .filter(|row| row.probes.is_empty())
-            .map(|row| row.binding.keys)
-            .collect();
-        assert!(unprobed.is_empty(), "{unprobed:?}");
-    }
-
-    #[test]
-    fn the_keymap_doc_lists_the_same_rows() {
-        let doc = include_str!("../../docs/context/keymap.md");
-        let table: Vec<(&str, &str)> = doc
-            .lines()
-            .skip_while(|line| *line != "| Input | Command |")
-            .skip(2)
-            .take_while(|line| line.starts_with('|'))
-            .map(|line| {
-                let (keys, action) = line
-                    .trim_matches('|')
-                    .split_once(" | ")
-                    .expect("a two-column row");
-                (keys.trim(), action.trim())
-            })
-            .collect();
-        assert!(!table.is_empty(), "keymap.md has no binding table");
-        let rows: Vec<_> = BINDINGS
-            .iter()
-            .map(|row| (row.binding.keys, row.binding.action))
-            .collect();
-        assert_eq!(table, rows[..table.len()]);
-        // The doc mentions F9 in prose, as release builds lack it.
-        let extra: Vec<_> = rows[table.len()..].iter().map(|row| row.0).collect();
-        let expected: &[&str] = if cfg!(debug_assertions) { &["F9"] } else { &[] };
-        assert_eq!(extra, expected);
-    }
-
-    #[test]
-    fn each_section_is_one_run() {
-        let mut seen = Vec::new();
-        for row in BINDINGS {
-            let section = row.binding.section;
-            if seen.last() != Some(&section) {
-                assert!(!seen.contains(&section), "{section:?} is split");
-                seen.push(section);
-            }
-        }
-    }
-
-    #[test]
-    fn a_click_with_jitter_does_not_pan() {
-        let mut mouse = Mouse::default();
-        mouse.pressed(MouseButton::Left, [100.0, 100.0]);
-        for at in [[102.0, 101.0], [97.0, 98.0], [104.0, 100.0], [100.0, 96.0]] {
-            assert_eq!(mouse.moved(at), None, "jitter to {at:?} panned");
-        }
-        assert_eq!(
-            mouse.released(MouseButton::Left),
-            Some(advance(Direction::Backward, false))
-        );
-
-        mouse.pressed(MouseButton::Right, [100.0, 100.0]);
-        assert_eq!(mouse.moved([103.0, 102.0]), None);
-        assert_eq!(
-            mouse.released(MouseButton::Right),
-            Some(advance(Direction::Forward, false))
-        );
-    }
-
-    #[test]
-    fn a_left_drag_pans_by_the_whole_distance_and_is_not_a_click() {
-        let mut mouse = Mouse::default();
-        mouse.pressed(MouseButton::Left, [100.0, 100.0]);
-        assert_eq!(
-            mouse.moved([110.0, 100.0]),
-            Some(Command::Pan(PanBy::Pixels { dx: 10.0, dy: 0.0 }))
-        );
-        // Once dragging, small steps pan too.
-        assert_eq!(
-            mouse.moved([111.0, 99.0]),
-            Some(Command::Pan(PanBy::Pixels { dx: 1.0, dy: -1.0 }))
-        );
-        assert_eq!(mouse.released(MouseButton::Left), None);
-        assert_eq!(
-            mouse.moved([200.0, 200.0]),
-            None,
-            "moving with no button held"
-        );
-    }
-
-    #[test]
-    fn a_right_drag_up_zooms_in_about_where_it_started() {
-        let mut mouse = Mouse::default();
-        mouse.pressed(MouseButton::Right, [300.0, 400.0]);
-        let Some(Command::Zoom { factor, anchor }) = mouse.moved([300.0, 200.0]) else {
-            panic!("right drag did not zoom");
-        };
-        assert!((factor - 2.0).abs() < 1e-5);
-        assert_eq!(anchor, Anchor::Cursor { x: 300.0, y: 400.0 });
-        assert_eq!(mouse.released(MouseButton::Right), None);
     }
 
     #[test]

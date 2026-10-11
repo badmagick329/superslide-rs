@@ -1,10 +1,10 @@
-//! The advance limit: how often a held Space or Backspace may change the image.
+//! The advance limit: how often a held key may change the image.
 
 use std::time::{Duration, Instant};
 
-use crate::browse::domain::Direction;
+use crate::browse::domain::{Direction, Travel};
 
-/// Paces held Space and Backspace. Key repeat arrives at the keyboard's rate, about 30 a second;
+/// Paces held keys that change the image: Space and Backspace, and Vim's j, k, Ctrl+D and Ctrl+U. Key repeat arrives at the keyboard's rate, about 30 a second;
 /// a repeat only shows the key is still down, and the image changes at most once per limit. A
 /// repeat that comes early is kept and advances the moment the limit passes, so the pace is the
 /// limit itself, not the limit rounded up to the next repeat.
@@ -15,7 +15,7 @@ pub struct AdvanceLimit {
     last: Option<Instant>,
     /// An early repeat waiting for the limit. Only a repeat sets it, so a key whose release was
     /// never seen advances at most once more.
-    pending: Option<Direction>,
+    pending: Option<Travel>,
 }
 
 impl AdvanceLimit {
@@ -39,10 +39,10 @@ impl AdvanceLimit {
     }
 
     /// A key repeat: true when it advances now; otherwise it waits for [`Self::due`].
-    pub fn repeated(&mut self, direction: Direction, now: Instant) -> bool {
+    pub fn repeated(&mut self, travel: Travel, now: Instant) -> bool {
         match self.last {
             Some(last) if now < last + self.limit => {
-                self.pending = Some(direction);
+                self.pending = Some(travel);
                 false
             }
             _ => {
@@ -54,7 +54,8 @@ impl AdvanceLimit {
 
     /// The key that was repeating is up: a waiting repeat must not advance after it.
     pub fn released(&mut self, direction: Direction) {
-        self.pending.take_if(|pending| *pending == direction);
+        self.pending
+            .take_if(|pending| pending.direction() == direction);
     }
 
     /// When a waiting repeat advances; the event loop sleeps until then.
@@ -62,8 +63,8 @@ impl AdvanceLimit {
         self.pending.and(self.last).map(|last| last + self.limit)
     }
 
-    /// The direction to advance, once a waiting repeat is due.
-    pub fn tick(&mut self, now: Instant) -> Option<Direction> {
+    /// The move to make, once a waiting repeat is due.
+    pub fn tick(&mut self, now: Instant) -> Option<Travel> {
         let due = self.due().filter(|&due| now >= due)?;
         // The clock restarts at `due`, not `now`: a late wake-up must not slow the pace.
         self.last = Some(due);
@@ -76,6 +77,7 @@ mod tests {
     use super::*;
 
     const LIMIT: Duration = Duration::from_millis(500);
+    const FORWARD: Travel = Travel::Step(Direction::Forward);
 
     /// Holds a key from `start` for `held`, with the keyboard's repeat delay and rate, waking
     /// at `due` as the event loop would. Returns the times the image changed.
@@ -88,10 +90,10 @@ mod tests {
             while let Some(due) = limit.due().filter(|&due| due <= repeat) {
                 // The wake-up runs a little late, as `WaitUntil` does.
                 let woke = due + Duration::from_millis(4);
-                assert_eq!(limit.tick(woke), Some(Direction::Forward));
+                assert_eq!(limit.tick(woke), Some(FORWARD));
                 advances.push(woke);
             }
-            if limit.repeated(Direction::Forward, repeat) {
+            if limit.repeated(FORWARD, repeat) {
                 advances.push(repeat);
             }
             repeat += rate;
@@ -124,7 +126,7 @@ mod tests {
         assert_eq!(hold(&mut limit, start + held, held).len(), 40);
         // Mid-hold too: a repeat already waiting is due at the new limit.
         limit.pressed(start);
-        assert!(!limit.repeated(Direction::Forward, start + Duration::from_millis(100)));
+        assert!(!limit.repeated(FORWARD, start + Duration::from_millis(100)));
         limit.set_limit(Duration::from_millis(1000));
         assert_eq!(limit.due(), Some(start + Duration::from_millis(1000)));
     }
@@ -136,9 +138,9 @@ mod tests {
         limit.pressed(start);
         // Tapping again is a press, not a repeat: it is never held back.
         limit.pressed(start + Duration::from_millis(50));
-        assert!(!limit.repeated(Direction::Forward, start + Duration::from_millis(100)));
+        assert!(!limit.repeated(FORWARD, start + Duration::from_millis(100)));
         assert_eq!(limit.due(), Some(start + Duration::from_millis(550)));
-        assert!(limit.repeated(Direction::Forward, start + Duration::from_millis(600)));
+        assert!(limit.repeated(FORWARD, start + Duration::from_millis(600)));
         assert_eq!(limit.due(), None);
     }
 
@@ -147,11 +149,13 @@ mod tests {
         let mut limit = AdvanceLimit::new(LIMIT);
         let start = Instant::now();
         limit.pressed(start);
-        assert!(!limit.repeated(Direction::Backward, start + Duration::from_millis(300)));
+        let skip_back = Travel::Skip(Direction::Backward, 10);
+        assert!(!limit.repeated(skip_back, start + Duration::from_millis(300)));
         limit.released(Direction::Forward);
         assert_eq!(
             limit.tick(start + Duration::from_millis(500)),
-            Some(Direction::Backward)
+            Some(skip_back),
+            "a held Ctrl+U keeps jumping ten"
         );
     }
 }

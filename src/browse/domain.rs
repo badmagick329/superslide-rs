@@ -16,6 +16,24 @@ pub enum Direction {
     Backward,
 }
 
+/// How far one press moves through the image list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Travel {
+    /// One image, wrapping at the ends: Space, j, a click.
+    Step(Direction),
+    /// Several images, stopping at the ends: a wrap partway through a jump would land somewhere
+    /// the owner cannot predict.
+    Skip(Direction, usize),
+}
+
+impl Travel {
+    pub fn direction(self) -> Direction {
+        match self {
+            Travel::Step(direction) | Travel::Skip(direction, _) => direction,
+        }
+    }
+}
+
 /// What N, D and Z sort by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortKey {
@@ -226,6 +244,47 @@ impl ImageList {
         };
         self.current = next;
         Some(wrapped)
+    }
+
+    /// Moves up to `images` along, stopping at the first or last image. Returns whether the
+    /// current image changed.
+    pub fn skip(&mut self, direction: Direction, images: usize) -> bool {
+        let Some(last) = self.entries.len().checked_sub(1) else {
+            return false;
+        };
+        let to = match direction {
+            Direction::Forward => self.current.saturating_add(images).min(last),
+            Direction::Backward => self.current.saturating_sub(images),
+        };
+        self.go_to(to)
+    }
+
+    /// Makes the image at `position` current, or the last one past the end, as Vim's `G` treats
+    /// a line number. Returns whether the current image changed.
+    pub fn go_to(&mut self, position: usize) -> bool {
+        let Some(last) = self.entries.len().checked_sub(1) else {
+            return false;
+        };
+        let from = std::mem::replace(&mut self.current, position.min(last));
+        from != self.current
+    }
+
+    /// Vim's `gg` and `G`: a group jump while grouped by subfolder into two or more groups;
+    /// otherwise the first or last image, so the keys still do something useful. Groups are
+    /// contiguous, so two or more exist exactly when the ends lie in different folders. Returns
+    /// whether a group jump wrapped.
+    pub fn jump_group_or_end(&mut self, direction: Direction) -> bool {
+        let (Some(first), Some(last)) = (self.entries.first(), self.entries.last()) else {
+            return false;
+        };
+        if self.order.grouped && folder(&first.path) != folder(&last.path) {
+            return self.jump_group(direction).unwrap_or(false);
+        }
+        self.go_to(match direction {
+            Direction::Forward => usize::MAX,
+            Direction::Backward => 0,
+        });
+        false
     }
 
     pub fn order(&self) -> Order {
@@ -674,6 +733,62 @@ mod tests {
         let mut ungrouped = ImageList::new(entries, None, by(SortKey::Name));
         assert_eq!(ungrouped.jump_group(Direction::Forward), None);
         assert_eq!(ungrouped.current_position(), 0);
+    }
+
+    #[test]
+    fn skips_and_go_tos_stop_at_the_ends() {
+        // Name order: b, img1, IMG2, img10.
+        let mut list = ImageList::new(sample(), Some(Path::new("f/img1.jpg")), by(SortKey::Name));
+        assert!(list.skip(Direction::Forward, 2));
+        assert_eq!(list.current_position(), 3);
+        assert!(
+            !list.skip(Direction::Forward, 10),
+            "already at the last image"
+        );
+        assert!(list.skip(Direction::Backward, 10));
+        assert_eq!(list.current_position(), 0);
+        assert!(list.go_to(2));
+        assert!(!list.go_to(2));
+        assert!(list.go_to(usize::MAX));
+        assert_eq!(list.current_position(), 3);
+
+        let mut empty = ImageList::new(Vec::new(), None, by(SortKey::Name));
+        assert!(!empty.skip(Direction::Forward, 1));
+        assert!(!empty.go_to(0));
+    }
+
+    #[test]
+    fn gg_and_g_jump_groups_only_with_two_or_more() {
+        let grouped = Order {
+            grouped: true,
+            ..by(SortKey::Name)
+        };
+        let at = |paths: &[&str], current: &str, order| {
+            let entries = paths.iter().map(|path| entry(path, 0, 0)).collect();
+            ImageList::new(entries, Some(Path::new(current)), order)
+        };
+        let path = |list: &ImageList| list.current().unwrap().path.to_str().unwrap().to_owned();
+        let two = ["r/a/1.jpg", "r/a/2.jpg", "r/b/1.jpg", "r/b/2.jpg"];
+
+        let mut list = at(&two, "r/a/2.jpg", grouped);
+        assert!(!list.jump_group_or_end(Direction::Forward));
+        assert_eq!(path(&list), "r/b/1.jpg", "next group, not the last image");
+        assert!(
+            list.jump_group_or_end(Direction::Forward),
+            "wraps like Ctrl+Right"
+        );
+        assert_eq!(path(&list), "r/a/1.jpg");
+
+        // Ungrouped, or grouped into one folder: the ends. With one group a jump would wrap
+        // to the first image, so G could never reach the last.
+        let one = ["r/a/1.jpg", "r/a/2.jpg", "r/a/3.jpg"];
+        for (paths, order) in [(&two[..], by(SortKey::Name)), (&one[..], grouped)] {
+            let mut list = at(paths, "r/a/2.jpg", order);
+            assert!(!list.jump_group_or_end(Direction::Forward));
+            assert_eq!(list.current_position(), paths.len() - 1, "{paths:?}");
+            assert!(!list.jump_group_or_end(Direction::Backward));
+            assert_eq!(list.current_position(), 0, "{paths:?}");
+        }
     }
 
     #[test]

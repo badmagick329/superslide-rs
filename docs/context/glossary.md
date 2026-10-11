@@ -1,25 +1,28 @@
 # Glossary
 
-The project's ubiquitous language, one row per concept; the index's *Language* section says how to use it. Sorted by term. Default values live in [architecture.md](architecture.md) *Preference defaults*.
+The project's ubiquitous language, one row per concept; the index's *Language* section says how to use it. Sorted by term. Default values live in [architecture.md](architecture.md) *Preference defaults*. Keys named here are the classic keymap's; [keymap.md](keymap.md) gives the Vim ones.
 
 | Term | Meaning | Avoid | In code |
 | --- | --- | --- | --- |
-| Advance limit | The shortest interval between image changes while Space or Backspace is held. | fast-forward, fast-back | `AdvanceLimit` |
+| Advance limit | The shortest interval between image changes while a key that moves through the image list is held: Space or Backspace, or Vim's j, k, Ctrl+D or Ctrl+U. | fast-forward, fast-back | `AdvanceLimit` |
 | Clipboard image | An image pasted with Ctrl+V, shown in place of the current image but outside the image list; file actions and Ctrl+C are disabled on it. | pasted image | `Showing::Image` with no path while `Shown::pasted` is set |
+| Count | Digits typed before a Vim key to say how many or which: `5j` moves five images, `5G` goes to the fifth. | prefix, number argument | `vim::Vim::count` |
 | Current image | The image on screen, one position in the image list. | current slide | |
 | Error card | What is drawn in place of an image that failed to decode: the file name and a one-line reason. | | `load::presentation::error_card` |
 | File action | Delete to the Recycle Bin (Delete), move (M) or copy (C) of the current image's file; the only writes the viewer makes to image files. | | `file_actions::domain::Action` |
 | Fit | The zoom level at which the whole image fits the window; every image opens at fit. | | |
 | Folder filter | Folder names excluded when opening a folder. | family filter, excluded folders | |
-| Group by subfolder | Ordering that keeps each subfolder's images together, sorted by the sort mode within each group; Ctrl+Left/Right jumps between groups. | | `Order::grouped`, `ImageList::jump_group` |
-| Help overlay | The panel ? opens over the image, listing every binding, scrollable and filterable with /. While open it takes all input. | cheat sheet, shortcuts screen | `help` slice; rows are `shell::keymap::BINDINGS` |
+| Group by subfolder | Ordering that keeps each subfolder's images together, sorted by the sort mode within each group; Ctrl+Left/Right (Vim: gg / G) jumps between groups. | | `Order::grouped`, `ImageList::jump_group` |
+| Help overlay | The panel ? opens over the image, listing every binding, scrollable and filterable with /. While open it takes all input. | cheat sheet, shortcuts screen | `help` slice; rows are the keymap's `BINDINGS` |
 | Image | A JPG, PNG, TGA or BMP file the viewer can show. | photo, slide, picture | |
 | Image list | The ordered images from the last open, after the folder filter, sort mode and grouping are applied. | playlist | `ImageList`; its order is `Order` |
 | Info overlay | Text in the bottom-left corner describing the image on screen; I cycles it through hidden, file name only and full details. | | `info_overlay` slice; its mode is `InfoOverlay`, kept in `Preferences` |
+| Keymap | The set of key bindings in use, a preference: classic (the original's keys, the default) or Vim. Mouse bindings are the same in both. | key scheme, shortcuts, Vim mode | `prefs::domain::Keymap`; run by `shell::keymap::Keys` |
 | Magnification filter | How pixels are drawn when zoomed past native size: linear (smooth) or nearest (sharp); Ctrl+F toggles it. | bilinear filtering | |
 | Notice | A short text shown over the image that fades after a few seconds, for errors, progress and confirmations. | toast, popup | |
 | Pan | Moving a zoomed image within the window by drag or arrow keys. | scroll | |
-| Preferences | The owner's persisted options, kept in `superslide-prefs.toml` beside the executable, and the screen opened with P that edits them. | settings, config, options | `prefs` slice; the options are `Preferences`, the file `TomlFile<Preferences>`, the open screen `Screen` |
+| Pending keys | A count or the first key of a two-key Vim binding, shown in the bottom-right corner until the binding completes or Esc clears it. | | `Keys::pending` |
+| Preferences | The owner's persisted options, kept in `superslide-prefs.toml` beside the executable, and the screen opened with P (Vim: `:`) that edits them. | settings, config, options | `prefs` slice; the options are `Preferences`, the file `TomlFile<Preferences>`, the open screen `Screen` |
 | Preload cache | Decoded images held on the GPU under a memory budget so navigation shows them without waiting. | | `PreloadCache` |
 | Preload window | The images the preload cache wants: the current image, 3 ahead and 1 behind in the direction of travel. | | `preload_window` |
 | Recursive open | Opening a folder together with all its subfolders (Shift+O); sets the sort mode to shuffle. | | |
