@@ -327,7 +327,13 @@ impl ApplicationHandler<AppEvent> for App {
             .window
             .as_ref()
             .and_then(|saved| saved.restored(&monitors, primary.as_ref()));
-        let mut attributes = Window::default_attributes().with_title(TITLE);
+        // Hidden until fullscreen and the first frame are in place (the end of `resumed`). Shown
+        // windowed first, it was tiled by GlazeWM, which then fought the switch to fullscreen,
+        // flashing white tiles; a window that is fullscreen when it appears, GlazeWM leaves
+        // fullscreen. Nor is an undrawn, white window ever on screen.
+        let mut attributes = Window::default_attributes()
+            .with_title(TITLE)
+            .with_visible(false);
         if let Some(placement) = &restored {
             let [x, y] = placement.position;
             let [width, height] = placement.size;
@@ -475,6 +481,10 @@ impl ApplicationHandler<AppEvent> for App {
                     self.open(open, None);
                 }
             }
+        }
+        if let Some(shown) = &mut self.shown {
+            shown.redraw();
+            shown.window.set_visible(true);
         }
     }
 
