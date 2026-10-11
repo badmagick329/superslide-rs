@@ -12,7 +12,8 @@ use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::monitor::MonitorHandle;
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::platform::windows::{IconExtWindows, WindowExtWindows};
+use winit::window::{Fullscreen, Icon, Window, WindowId};
 
 use crate::browse::domain::advance::AdvanceLimit;
 use crate::browse::domain::slideshow::Slideshow;
@@ -45,6 +46,7 @@ use crate::shell::command::Command;
 use crate::shell::keymap::{self, HelpKey};
 use crate::shell::render::{self, ImageTexture, Renderer, UiFrame};
 use crate::view::domain::{MagnificationFilter, View};
+use crate::welcome::presentation as welcome;
 
 /// Sent to the event loop from other threads through its proxy.
 pub enum AppEvent {
@@ -75,6 +77,8 @@ const SLIDESHOW_NOTICE: &str = "slideshow";
 const CLIPBOARD_NOTICE: &str = "clipboard";
 const NOT_A_FILE: &str = "This image is not a file";
 const TITLE: &str = "SuperSlide-RS";
+/// The app icon's resource ordinal, from `assets/superslide.rc`.
+const ICON_RESOURCE: u16 = 1;
 /// Waits shorter than this pass without a notice: a flash of `Loading…` on every image change
 /// would be noise.
 const LOADING_DELAY: Duration = Duration::from_millis(150);
@@ -94,8 +98,8 @@ struct Cached {
 /// shows a blank frame.
 enum Showing {
     Image {
-        /// `None` for the stand-in shown before the first image opens, and for the clipboard
-        /// image.
+        /// `None` for the stand-in `SUPERSLIDE_STAND_IN` puts up at startup, and for the
+        /// clipboard image.
         path: Option<PathBuf>,
         texture: Rc<ImageTexture>,
         original_size: [u32; 2],
@@ -106,7 +110,8 @@ enum Showing {
         file_name: String,
         reason: String,
     },
-    /// The last image was deleted or moved away.
+    /// No image yet, or the last image was deleted or moved away. The welcome screen draws over
+    /// it while no image list is open or opening.
     Nothing,
 }
 
@@ -189,6 +194,10 @@ struct Shown {
     /// navigation goes back to the image list's current image rather than stepping past it.
     pasted: bool,
     waiting: Option<Waiting>,
+    /// A scan is running. The welcome screen stays away meanwhile, so a session restore or a
+    /// command-line open never flashes it before the first image.
+    scanning: bool,
+    welcome_logo: egui::TextureHandle,
     /// The help overlay, while it is open. It takes all input before the keymap.
     help: Option<Help>,
     egui: egui::Context,
@@ -235,7 +244,8 @@ impl App {
         let generation = self.scan_generation;
         let proxy = self.proxy.clone();
         // Opens start only once the window exists, and with it the preferences.
-        let Some(shown) = &self.shown else { return };
+        let Some(shown) = &mut self.shown else { return };
+        shown.scanning = true;
         self.scan = Some(Scan::spawn(
             open,
             &shown.preferences.folder_filter,
@@ -258,6 +268,7 @@ impl App {
             }
             ScanEvent::Done(found) => {
                 self.scan = None;
+                shown.scanning = false;
                 let Found {
                     list,
                     opened,
@@ -323,6 +334,7 @@ impl ApplicationHandler<AppEvent> for App {
             Ok(window) => Arc::new(window),
             Err(e) => return fail(event_loop, &format!("Cannot open a window: {e}")),
         };
+        set_icons(&window);
         // Read before fullscreen covers it; a maximised window's place is the restored one.
         let placement = restored.clone().or_else(|| plain_placement(&window));
         // The same call F11 makes, on the monitor the window is on. A session left fullscreen
@@ -343,11 +355,21 @@ impl ApplicationHandler<AppEvent> for App {
             Ok(renderer) => renderer,
             Err(e) => return fail(event_loop, &format!("Cannot start drawing: {e}")),
         };
-        let (image_size, pixels) = render::stand_in();
-        let texture = Rc::new(renderer.upload(image_size, &pixels));
         let size = window.inner_size();
         let window_size = [size.width.max(1), size.height.max(1)];
-        let view = View::new(texture.size(), Orientation::Normal, 0, window_size);
+        let showing = match render::stand_in() {
+            Some((image_size, pixels)) => {
+                let texture = Rc::new(renderer.upload(image_size, &pixels));
+                let view = View::new(texture.size(), Orientation::Normal, 0, window_size);
+                Showing::Image {
+                    path: None,
+                    texture,
+                    original_size: image_size,
+                    view,
+                }
+            }
+            None => Showing::Nothing,
+        };
         let proxy = self.proxy.clone();
         let workers = Workers::spawn(renderer.max_texture_dimension, move |path, result| {
             // Fails only once the event loop has exited, when nobody wants the result.
@@ -399,12 +421,7 @@ impl ApplicationHandler<AppEvent> for App {
             resuming: restoring.as_ref().map(|(_, resume)| resume.clone()),
             placement,
             preferences_screen: None,
-            showing: Showing::Image {
-                path: None,
-                texture,
-                original_size: image_size,
-                view,
-            },
+            showing,
             images: None,
             direction: Direction::Forward,
             advance: AdvanceLimit::new(advance_limit),
@@ -418,6 +435,8 @@ impl ApplicationHandler<AppEvent> for App {
             clipboard,
             pasted: false,
             waiting: None,
+            scanning: false,
+            welcome_logo: welcome::load_logo(&egui),
             help: None,
             egui,
             egui_input,
@@ -1216,6 +1235,11 @@ impl Shown {
         })
     }
 
+    /// Nothing on screen and nothing on its way: the window would otherwise be blank.
+    fn welcoming(&self) -> bool {
+        matches!(self.showing, Showing::Nothing) && self.images.is_none() && !self.scanning
+    }
+
     fn redraw(&mut self) {
         let now = Instant::now();
         let input = self.egui_input.take_egui_input(&self.window);
@@ -1225,6 +1249,7 @@ impl Shown {
             _ => self.details(),
         };
         let showing = &self.showing;
+        let welcoming = self.welcoming().then_some(&self.welcome_logo);
         let shown_notices = &mut self.notices;
         let open_help = &mut self.help;
         let before = self
@@ -1234,6 +1259,9 @@ impl Shown {
         let edited = &mut self.preferences;
         let screen = &mut self.preferences_screen;
         let output = self.egui.run_ui(input, |ui| {
+            if let Some(logo) = welcoming {
+                welcome::show(ui.ctx(), logo);
+            }
             if let Showing::Error {
                 file_name, reason, ..
             } = showing
@@ -1442,6 +1470,18 @@ fn plain_placement(window: &Window) -> Option<Placement> {
 
 /// Startup failures come before any overlay exists, and release builds have no console, so a
 /// message box is the only way the owner hears about them.
+/// The title bar and taskbar take the executable's own icon, each loaded at its size for the
+/// window's DPI, so neither is a blurred rescale of the other.
+fn set_icons(window: &Window) {
+    let icon = |points: f64| {
+        let side = (points * window.scale_factor()).round() as u32;
+        Icon::from_resource(ICON_RESOURCE, Some(PhysicalSize::new(side, side)))
+            .expect("build.rs embeds the icon in the executable")
+    };
+    window.set_window_icon(Some(icon(16.0)));
+    window.set_taskbar_icon(Some(icon(32.0)));
+}
+
 fn fail(event_loop: &ActiveEventLoop, message: &str) {
     eprintln!("superslide: {message}");
     rfd::MessageDialog::new()

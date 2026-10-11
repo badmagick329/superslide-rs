@@ -29,4 +29,5 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Slideshow | Timed automatic advance to the next image, toggled with A. | | `Slideshow` |
 | Sort mode | The image list's order: name (N), date (D), size (Z) or shuffle (S); V reverses it. | | `SortMode` |
 | Target folder | The folder M or C last moved or copied an image to; the next folder picker opens there. | last target, destination | `Shown::target_folder` |
+| Welcome screen | What the window shows while no image list is open: the app icon, the keys that open images, and a drop hint. | intro screen, splash screen, empty state | `welcome` slice; shown when `Shown::welcoming` |
 | Zoom | Scaling the image relative to fit, by right-drag, wheel, + / - or Ctrl+ / Ctrl- (double or half). | | |

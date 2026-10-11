@@ -13,6 +13,7 @@ mod notices;
 mod prefs;
 mod shell;
 mod view;
+mod welcome;
 
 use std::path::PathBuf;
 

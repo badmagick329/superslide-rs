@@ -13,9 +13,9 @@ use crate::view::domain::{MagnificationFilter, Transform};
 /// tested on a machine that has a GPU.
 const FORCE_WARP_VAR: &str = "SUPERSLIDE_FORCE_WARP";
 
-/// Replaces the checkerboard stand-in: `stripes` is an 8000 × 6000 image of 1 px stripes, the
-/// worst case for moiré and a 48 MP upload to time; `white` and `black` are solid, for checking
-/// that overlays stay legible.
+/// Puts a generated image up at startup in place of the welcome screen: `checker` is a 3:2
+/// checkerboard; `stripes` an 8000 × 6000 image of 1 px stripes, the worst case for moiré and a
+/// 48 MP upload to time; `white` and `black` are solid, for checking that overlays stay legible.
 const STAND_IN_VAR: &str = "SUPERSLIDE_STAND_IN";
 
 /// Bytes of the `Uniforms` struct in `quad.wgsl`: a `mat2x2<f32>`, then two `vec2<f32>`.
@@ -580,15 +580,16 @@ fn uniform_bytes(transform: Transform, config: &wgpu::SurfaceConfiguration) -> [
     bytes
 }
 
-/// A generated image shown until the first image opens: the checkerboard, or what
-/// `STAND_IN_VAR` selects.
-pub fn stand_in() -> ([u32; 2], Vec<u8>) {
+/// The generated image `STAND_IN_VAR` selects, shown until the first image opens; `None` when it
+/// is unset or names none.
+pub fn stand_in() -> Option<([u32; 2], Vec<u8>)> {
     let solid = |value| ([384, 256], [value, value, value, 255].repeat(384 * 256));
-    match std::env::var(STAND_IN_VAR).as_deref() {
-        Ok("stripes") => stripes(),
-        Ok("white") => solid(255),
-        Ok("black") => solid(0),
-        _ => checkerboard(),
+    match std::env::var(STAND_IN_VAR).ok()?.as_str() {
+        "checker" => Some(checkerboard()),
+        "stripes" => Some(stripes()),
+        "white" => Some(solid(255)),
+        "black" => Some(solid(0)),
+        _ => None,
     }
 }
 

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 64 64">
+  <!-- SuperSlide-RS: a deck of slides, the front one a photo, with a Rust cog. -->
+  <rect x="4" y="4" width="56" height="56" rx="13" fill="#3C3489"/>
+  <rect x="18" y="12" width="34" height="30" rx="4" fill="#7F77DD"/>
+  <rect x="14" y="16" width="34" height="30" rx="4" fill="#AFA9EC"/>
+  <rect x="10" y="20" width="34" height="30" rx="4" fill="#FFFFFF"/>
+  <path d="M13 47l9-11 6 7 4-4 9 8z" fill="#534AB7"/>
+  <circle cx="35" cy="28" r="3.5" fill="#EF9F27"/>
+  <g transform="translate(47 47)">
+    <g fill="#D85A30">
+      <rect x="-2.6" y="-13" width="5.2" height="6" rx="1"/>
+      <rect x="-2.6" y="-13" width="5.2" height="6" rx="1" transform="rotate(45)"/>
+      <rect x="-2.6" y="-13" width="5.2" height="6" rx="1" transform="rotate(90)"/>
+      <rect x="-2.6" y="-13" width="5.2" height="6" rx="1" transform="rotate(135)"/>
+      <rect x="-2.6" y="-13" width="5.2" height="6" rx="1" transform="rotate(180)"/>
+      <rect x="-2.6" y="-13" width="5.2" height="6" rx="1" transform="rotate(225)"/>
+      <rect x="-2.6" y="-13" width="5.2" height="6" rx="1" transform="rotate(270)"/>
+      <rect x="-2.6" y="-13" width="5.2" height="6" rx="1" transform="rotate(315)"/>
+      <circle r="9"/>
+    </g>
+    <circle r="3.6" fill="#3C3489"/>
+  </g>
+</svg>

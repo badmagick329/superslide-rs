@@ -1,0 +1,3 @@
+// Resource 1 is the app icon: Explorer and the shortcut use the first icon in the executable,
+// and `shell::app` loads it by this ordinal for the title bar and taskbar.
+1 ICON "icon.ico"
