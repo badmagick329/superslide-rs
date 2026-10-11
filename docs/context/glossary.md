@@ -12,11 +12,10 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Error card | What is drawn in place of an image that failed to decode: the file name and a one-line reason. | | `load::presentation::error_card` |
 | File action | Delete to the Recycle Bin (Delete), move (M) or copy (C) of the current image's file, or of every marked image's at once; the only writes the viewer makes to image files. | bulk action | `file_actions::domain::Action`; over the marked images, `Batch` |
 | Fit | The zoom level at which the whole image fits the window; every image opens at fit. | | |
-| Folder filter | Folder names excluded when opening a folder. | family filter, excluded folders | |
 | Group by subfolder | Ordering that keeps each subfolder's images together, sorted by the sort mode within each group; Ctrl+Left/Right (Vim: gg / G) jumps between groups. | | `Order::grouped`, `ImageList::jump_group` |
 | Help overlay | The panel ? opens over the image, listing every binding, scrollable and filterable with /. While open it takes all input. | cheat sheet, shortcuts screen | `help` slice; rows are the keymap's `BINDINGS` |
 | Image | A JPG, PNG, TGA or BMP file the viewer can show. | photo, slide, picture | |
-| Image list | The ordered images from the last open, after the folder filter, sort mode and grouping are applied. | playlist | `ImageList`; its order is `Order` |
+| Image list | The ordered images from the last open, without skipped folders, after the sort mode and grouping are applied. | playlist | `ImageList`; its order is `Order` |
 | Info overlay | Text in the bottom-left corner describing the image on screen; I cycles it through hidden, file name only and full details. | | `info_overlay` slice; its mode is `InfoOverlay`, kept in `Preferences` |
 | Keymap | The set of key bindings in use, a preference: classic (the original's keys, the default) or Vim. Mouse bindings are the same in both. | key scheme, shortcuts, Vim mode | `prefs::domain::Keymap`; run by `shell::keymap::Keys` |
 | Mark | A flag on an image, set with Vim's m, that makes file actions and Ctrl+C act on every marked image at once. It belongs to the file, so re-sorting keeps it; a new image list starts with none. | selection, tag, select | `ImageList::marked` |
@@ -31,6 +30,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Screen rotation | Turning how the current image is drawn by 90°. Never written to the file; lasts until the app closes. | lossless rotation, EXIF rotation | |
 | Session restore | On startup, reopening the last image list, current image, sort mode, shuffle order and window placement, and bringing back the chosen order, kept in `superslide-session.toml` beside the executable. | | `Session`; where the window reopens, `Placement` |
 | Shuffle | The sort mode that gives the image list a random order, kept until the next shuffle. | random | |
+| Skipped folders | Folder names a recursive open leaves out, with everything inside them; names match whole and in any case. The folder opened is never skipped. A preference. | folder filter, family filter, excluded folders | `Preferences::folder_filter`, the same key in the preferences file |
 | Slideshow | Timed automatic advance to the next image, toggled with A. | | `Slideshow` |
 | Sort mode | The image list's order: name (N), date (D), size (Z) or shuffle (S); V reverses it. | | `SortMode` |
 | Target folder | The folder M or C last moved or copied an image to; the next folder picker opens there. | last target, destination | `Shown::target_folder` |

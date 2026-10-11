@@ -26,7 +26,7 @@ pub struct Preferences {
     /// held.
     pub advance_limit_ms: u32,
     pub slideshow_interval_s: u32,
-    /// Folder names skipped when opening a folder, matched case-insensitively.
+    /// Skipped folders: names a recursive open leaves out, matched whole and case-insensitively.
     pub folder_filter: Vec<String>,
     /// GPU texture bytes the preload cache may hold, mips included.
     pub preload_budget_mb: u32,
@@ -81,7 +81,7 @@ impl Preferences {
 /// The preferences screen while it is open.
 #[derive(Debug)]
 pub struct Screen {
-    /// The folder filter as typed, one name per line. Kept as text, because reading it back from
+    /// Skipped folders as typed, one name per line. Kept as text, because reading it back from
     /// `Preferences` every frame would drop the empty line a just-typed Enter makes.
     pub folder_filter: String,
 }

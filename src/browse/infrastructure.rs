@@ -1,4 +1,4 @@
-//! Scanning paths into the image list on its own thread: the opening routes, the folder filter and
+//! Scanning paths into the image list on its own thread: the opening routes, skipped folders and
 //! progress counts. The only filesystem access browsing makes.
 
 use std::collections::HashSet;
@@ -30,7 +30,7 @@ pub enum Open {
     /// lone folder opens its images; several paths open the union of each file and each folder's
     /// images. Never recursive.
     Paths(Vec<PathBuf>),
-    /// The folder and every subfolder the folder filter allows.
+    /// The folder and every subfolder not among skipped folders.
     Recursive(PathBuf),
 }
 

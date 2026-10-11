@@ -28,6 +28,11 @@ const NOTE_SIZE: f32 = 14.0;
 const CHROME_HEIGHT: f32 = 120.0;
 const LABEL_SHARE: f32 = 0.3;
 const COLUMN_GAP: f32 = 16.0;
+/// Only a recursive open looks into subfolders, so only Shift+O consults the list.
+const SKIPPED_FOLDERS_DETAIL: &str = "Shift+O leaves out every folder whose name is on a line, \
+    and everything inside it. Names match whole and in any case: private skips Private but not \
+    private-2024. The folder you open is never skipped, and other opens never look into \
+    subfolders.";
 
 /// The keys the screen's notes name, in the keymap in use.
 pub struct PreferenceKeys {
@@ -169,7 +174,7 @@ fn rows(
                         .suffix(" s"),
                 );
             });
-            top_label(ui, "Folder filter");
+            top_label(ui, "Skipped folders");
             ui.vertical(|ui| {
                 let edited = ui
                     .add(
@@ -178,11 +183,17 @@ fn rows(
                             .desired_rows(1)
                             .desired_width(value_width),
                     )
+                    // The examples and the open root's exemption don't fit the note's line.
+                    .on_hover_text(SKIPPED_FOLDERS_DETAIL)
                     .changed();
                 if edited {
                     preferences.folder_filter = folder_filter(&screen.folder_filter);
                 }
-                note(ui, "One per line; applies at the next open");
+                note(
+                    ui,
+                    "Shift+O leaves these out, and all inside them · one name per line, whole \
+                     names, any case",
+                );
             });
             ui.end_row();
             row(ui, "Preload budget", "GPU memory for nearby images", |ui| {
