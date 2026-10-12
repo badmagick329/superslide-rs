@@ -2,7 +2,7 @@
 
 A release is a pushed tag. [release.yml](../../.github/workflows/release.yml) then tests and builds `superslide.exe` on `windows-latest` and publishes a GitHub release holding it, with notes from [cliff.toml](../../cliff.toml).
 
-1. Set `version` in `Cargo.toml` to the new version and commit it (`chore: release 0.0.2`). The workflow fails when the tag and that version differ.
+1. Set `version` in `Cargo.toml` to the new version and commit it (`chore: release 0.0.2`). The workflow fails when the tag and that version differ. The help overlay and the exe's Properties → Details read this version at build time, so nothing else needs bumping.
 2. `git tag v0.0.2`, then `git push origin main v0.0.2`.
 
 ## Release notes

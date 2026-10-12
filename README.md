@@ -30,7 +30,7 @@ Open images by dragging a file or folder onto the window, or press **O**. Next t
 | Ctrl+C / Ctrl+V | Copy the image / show the image on the clipboard |
 | I | Show the file name, then full details, then nothing |
 | P | Preferences, saved next to `superslide.exe` |
-| ? | List every key; / filters the list |
+| ? | List every key, with the version you run; / filters the list |
 
 Prefer Vim keys? Set **Keymap** to **Vim** in the preferences: j / k page, H J K L pan, `5j`, `gg` / `G`, `dd`, and Esc never quits. `m` marks images, and then `dd`, `x` (move), `c` (copy) and `y` act on all of them; `y` copies them as files, ready to paste into Discord or a folder.
 

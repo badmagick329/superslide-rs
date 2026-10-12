@@ -21,6 +21,8 @@ const MARGIN: i8 = 16;
 const TEXT_SIZE: f32 = 16.0;
 /// Height of the filter box, hint and margins above the list; the list gets the rest.
 const CHROME_HEIGHT: f32 = 110.0;
+/// Beside the filter box, so the version costs the list no height.
+const NAME_AND_VERSION: &str = concat!("SuperSlide-RS ", env!("CARGO_PKG_VERSION"));
 
 /// Centred across the image, its top a tenth of the way down, so filtering shortens it without
 /// moving the filter box. Notices draw in the foreground, over it. `hint` names the keys that
@@ -50,7 +52,18 @@ pub fn show(ctx: &egui::Context, help: &mut Help, rows: &[Binding], hint: &str) 
                 .inner_margin(Margin::same(MARGIN))
                 .show(ui, |ui| {
                     ui.set_width(width);
-                    filter_box(ui, help);
+                    // `horizontal` keeps the row one line high; the right-to-left layout inside it
+                    // lets the filter box take whatever width the version leaves.
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(NAME_AND_VERSION)
+                                    .size(TEXT_SIZE - 2.0)
+                                    .color(Color32::GRAY),
+                            );
+                            filter_box(ui, help);
+                        });
+                    });
                     ui.add(
                         Label::new(
                             RichText::new(hint)
@@ -188,4 +201,40 @@ pub fn show_pending(ctx: &egui::Context, keys: &str) {
                     );
                 });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(shape: &egui::Shape, into: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, into)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn the_overlay_names_the_running_version() {
+        let ctx = egui::Context::default();
+        let mut help = Help::new();
+        let mut frame = || {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                show(ui.ctx(), &mut help, &[], "hint");
+            });
+            // No renderer takes the font atlas; egui panics on dropping it unapplied.
+            output.textures_delta.clear();
+            output
+        };
+        // An area's first frame only measures it, drawing nothing.
+        frame();
+        let output = frame();
+        let mut drawn = Vec::new();
+        for clipped in &output.shapes {
+            texts(&clipped.shape, &mut drawn);
+        }
+        let expected = format!("SuperSlide-RS {}", env!("CARGO_PKG_VERSION"));
+        assert!(drawn.contains(&expected), "{drawn:?}");
+    }
 }
