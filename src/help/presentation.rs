@@ -6,6 +6,7 @@ use egui::{
     TextEdit, vec2,
 };
 
+use crate::NAME_AND_VERSION;
 use crate::help::domain::{Binding, Help, Measured, Section, matching};
 
 /// Share of the window the panel may cover, so the image stays in view at its edges.
@@ -21,8 +22,6 @@ const MARGIN: i8 = 16;
 const TEXT_SIZE: f32 = 16.0;
 /// Height of the filter box, hint and margins above the list; the list gets the rest.
 const CHROME_HEIGHT: f32 = 110.0;
-/// Beside the filter box, so the version costs the list no height.
-const NAME_AND_VERSION: &str = concat!("SuperSlide-RS ", env!("CARGO_PKG_VERSION"));
 
 /// Centred across the image, its top a tenth of the way down, so filtering shortens it without
 /// moving the filter box. Notices draw in the foreground, over it. `hint` names the keys that
@@ -52,6 +51,7 @@ pub fn show(ctx: &egui::Context, help: &mut Help, rows: &[Binding], hint: &str) 
                 .inner_margin(Margin::same(MARGIN))
                 .show(ui, |ui| {
                     ui.set_width(width);
+                    // The version sits beside the filter box, so it costs the list no height.
                     // `horizontal` keeps the row one line high; the right-to-left layout inside it
                     // lets the filter box take whatever width the version leaves.
                     ui.horizontal(|ui| {

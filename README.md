@@ -12,6 +12,8 @@ Runs on Windows 10 and 11 (64-bit).
 
 Open images by dragging a file or folder onto the window, or press **O**. Next time it opens where you left off.
 
+`superslide --version` (or `-v`) prints the version you have.
+
 | Key | Does |
 | --- | --- |
 | Space / Backspace | Next / previous image (or right / left click) |

@@ -4,7 +4,7 @@ How the viewer works, section by section, each linking the code it describes. Bi
 
 ## Shape
 
-One binary crate, `superslide-rs` ([Cargo.toml](../../Cargo.toml)), producing `superslide.exe`. Its version is `Cargo.toml`'s, read at compile time by the help overlay and by the exe's version resource (*Build*), so the release bump ([releasing.md](releasing.md)) updates both. Release builds set `#![windows_subsystem = "windows"]` ([main.rs](../../src/main.rs)) so no console opens.
+One binary crate, `superslide-rs` ([Cargo.toml](../../Cargo.toml)), producing `superslide.exe`. Its version is `Cargo.toml`'s, read at compile time by `--version`, the help overlay and the exe's version resource (*Build*), so the release bump ([releasing.md](releasing.md)) updates both. Release builds set `#![windows_subsystem = "windows"]` ([main.rs](../../src/main.rs)) so no console opens.
 
 The code is vertical slices, one folder per feature, each split into the layers it uses: `domain` (types and rules, no I/O crates), `infrastructure` (filesystem, threads, third-party decoders) and `presentation` (egui). Dependencies point inward: `shell` uses slices, a slice's `infrastructure` and `presentation` use its `domain`, and a slice reaches another slice only through that slice's `domain`. No slice imports `shell`. Why, and when a layer is added: [the vertical-slices decision](../decisions/2026-10-10-vertical-slices.md).
 
@@ -25,7 +25,7 @@ The code is vertical slices, one folder per feature, each split into the layers 
 
 A layer that grows past one concern becomes a file with submodules beside it (`load/domain.rs` and `load/domain/preload.rs`), so paths still name the layer.
 
-[`main`](../../src/main.rs) reads command-line paths, builds the event loop and hands control to `shell::app`. Unit tests sit beside the code they test; every `domain` and the `browse`, `load` and `file_actions` infrastructure carry them (the clipboard's `arboard` calls are checked by hand, as they need the real clipboard), and none needs a window or GPU, so tests run headless.
+[`main`](../../src/main.rs) reads command-line paths, builds the event loop and hands control to `shell::app`. `--version` or `-v` as the only argument prints `NAME_AND_VERSION` (`SuperSlide-RS <version>`, also the help overlay's) and exits without a window; with other arguments either is a path. A release build has no console of its own, so it first calls `AttachConsole(ATTACH_PARENT_PROCESS)` to print to the terminal that ran it; redirected output already has its handle. Neither PowerShell nor cmd waits for a GUI exe, so in a terminal the line can land after the next prompt; `superslide -v | Out-Host` waits. Unit tests sit beside the code they test; every `domain` and the `browse`, `load` and `file_actions` infrastructure carry them (the clipboard's `arboard` calls are checked by hand, as they need the real clipboard), and none needs a window or GPU, so tests run headless.
 
 ## Threads
 
