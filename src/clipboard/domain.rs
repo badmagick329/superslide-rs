@@ -1,6 +1,8 @@
-//! Ctrl+C and Ctrl+V outcomes, and the check a pasted image passes before it is trusted.
+//! Ctrl+C and Ctrl+V outcomes, the check a pasted image passes before it is trusted, and the
+//! text Ctrl+Shift+C puts on the clipboard.
 
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::load::domain::{DecodeError, MAX_PIXELS};
 
@@ -56,9 +58,30 @@ pub fn check_pasted(width: usize, height: usize, bytes: usize) -> Result<[u32; 2
     Ok([w, h])
 }
 
+/// One path per line, as Windows text separates lines. No quotes, so a path pastes cleanly into
+/// a chat, a text field or an Open dialog, and no trailing newline, so pasting one path into a
+/// terminal does not run it.
+pub fn path_list(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_list_is_one_unquoted_path_per_line_with_no_trailing_newline() {
+        let list = |paths: &[&str]| path_list(&paths.iter().map(PathBuf::from).collect::<Vec<_>>());
+        assert_eq!(list(&[r"C:\photos\a.jpg"]), r"C:\photos\a.jpg");
+        assert_eq!(
+            list(&[r"C:\photos\a.jpg", r"C:\my photos\b c.png", r"D:\d.bmp"]),
+            "C:\\photos\\a.jpg\r\nC:\\my photos\\b c.png\r\nD:\\d.bmp"
+        );
+    }
 
     #[test]
     fn pasted_images_are_checked_like_files() {

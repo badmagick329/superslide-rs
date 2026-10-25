@@ -1,7 +1,8 @@
 //! Ctrl+C and Ctrl+V on a thread of their own, through `arboard`. A copy re-decodes the file at
 //! full size and arboard encodes it as PNG as well as a bitmap, which takes seconds for a large
 //! photo; the event loop must not wait for that. A copy of the marked images puts their paths
-//! on the clipboard instead, as Explorer's Ctrl+C does.
+//! on the clipboard instead, as Explorer's Ctrl+C does. Ctrl+Shift+C puts paths on it as text,
+//! which is instant but runs here too, so it lands in order with the copies before it.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -9,7 +10,7 @@ use std::thread::{self, JoinHandle};
 
 use arboard::{Clipboard, ImageData};
 
-use crate::clipboard::domain::{CopyFailure, PasteFailure, check_pasted};
+use crate::clipboard::domain::{CopyFailure, PasteFailure, check_pasted, path_list};
 use crate::image_file::domain::Orientation;
 use crate::load::domain::{DecodeError, Decoded};
 use crate::view::domain::upright_pixels;
@@ -35,6 +36,8 @@ pub enum Request {
     /// The files themselves (`CF_HDROP`), not pixels: one clipboard image cannot hold several,
     /// and Discord, Explorer and chat apps paste a file list as one file each.
     CopyFiles(Vec<PathBuf>),
+    /// The paths as text, one per line.
+    CopyPaths(Vec<PathBuf>),
     Paste,
 }
 
@@ -44,6 +47,10 @@ pub enum Done {
         result: Result<(), CopyFailure>,
     },
     CopiedFiles {
+        paths: Vec<PathBuf>,
+        result: Result<(), CopyFailure>,
+    },
+    CopiedPaths {
         paths: Vec<PathBuf>,
         result: Result<(), CopyFailure>,
     },
@@ -77,6 +84,12 @@ impl ClipboardThread {
                                 .and_then(|mut clipboard| clipboard.set().file_list(&paths))
                                 .map_err(|e| CopyFailure::Clipboard(e.to_string()));
                             Done::CopiedFiles { paths, result }
+                        }
+                        Request::CopyPaths(paths) => {
+                            let result = Clipboard::new()
+                                .and_then(|mut clipboard| clipboard.set_text(path_list(&paths)))
+                                .map_err(|e| CopyFailure::Clipboard(e.to_string()));
+                            Done::CopiedPaths { paths, result }
                         }
                         Request::Paste => Done::Pasted(paste(&loading)),
                     });

@@ -52,10 +52,12 @@ pub enum Command {
     Open {
         recursive: bool,
     },
-    /// This and the next two act on every marked image while any is marked.
+    /// This and the next three act on every marked image while any is marked.
     DeleteToRecycleBin,
     Transfer(Transfer),
     CopyToClipboard,
+    /// The image's full path as text, where `CopyToClipboard` copies its pixels.
+    CopyPathToClipboard,
     PasteFromClipboard,
     TogglePreferences,
     /// ? opens the help overlay; while it is open, ? closes it.

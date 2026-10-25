@@ -30,11 +30,12 @@ Open images by dragging a file or folder onto the window, or press **O**. Next t
 | Delete | Send the image to the Recycle Bin |
 | M / C | Move / copy the image to a folder |
 | Ctrl+C / Ctrl+V | Copy the image / show the image on the clipboard |
+| Ctrl+Shift+C | Copy the image's full path as text |
 | I | Show the file name, then full details, then nothing |
 | P | Preferences, saved next to `superslide.exe` |
 | ? | List every key, with the version you run; / filters the list |
 
-Prefer Vim keys? Set **Keymap** to **Vim** in the preferences: j / k page, H J K L pan, `5j`, `gg` / `G`, `dd`, and Esc never quits. `m` marks images, and then `dd`, `x` (move), `c` (copy) and `y` act on all of them; `y` copies them as files, ready to paste into Discord or a folder.
+Prefer Vim keys? Set **Keymap** to **Vim** in the preferences: j / k page, H J K L pan, `5j`, `gg` / `G`, `dd`, and Esc never quits. `Y` copies the image's full path, like Ctrl+Shift+C. `m` marks images, and then `dd`, `x` (move), `c` (copy), `y` and `Y` act on all of them; `y` copies them as files, ready to paste into Discord or a folder, and `Y` copies their paths, one per line.
 
 The order you pick sticks: every folder you open after it uses the same order, so D then V shows each one newest first.
 

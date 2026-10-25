@@ -6,7 +6,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | --- | --- | --- | --- |
 | Advance limit | The shortest interval between image changes while a key that moves through the image list is held: Space or Backspace, or Vim's j, k, Ctrl+D or Ctrl+U. | fast-forward, fast-back | `AdvanceLimit` |
 | Chosen order | The order last set with a sort key (N, D, Z, S, V or G); every open takes it, a shuffle shuffled anew. Kept in the session. | default sort, last sort | `Shown::chosen_order`; applied by `Open::order` |
-| Clipboard image | An image pasted with Ctrl+V, shown in place of the current image but outside the image list; file actions, marks and Ctrl+C are disabled on it. | pasted image | `Showing::Image` with no path while `Shown::pasted` is set |
+| Clipboard image | An image pasted with Ctrl+V, shown in place of the current image but outside the image list; file actions, marks, Ctrl+C and Ctrl+Shift+C are disabled on it. | pasted image | `Showing::Image` with no path while `Shown::pasted` is set |
 | Count | Digits typed before a Vim key to say how many or which: `5j` moves five images, `5G` goes to the fifth. | prefix, number argument | `vim::Vim::count` |
 | Current image | The image on screen, one position in the image list. | current slide | |
 | Error card | What is drawn in place of an image that failed to decode: the file name and a one-line reason. | | `load::presentation::error_card` |
@@ -18,7 +18,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Image list | The ordered images from the last open, without skipped folders, after the sort mode and grouping are applied. | playlist | `ImageList`; its order is `Order` |
 | Info overlay | Text in the bottom-left corner describing the image on screen; I cycles it through hidden, file name only and full details. | | `info_overlay` slice; its mode is `InfoOverlay`, kept in `Preferences` |
 | Keymap | The set of key bindings in use, a preference: classic (the original's keys, the default) or Vim. Mouse bindings are the same in both. | key scheme, shortcuts, Vim mode | `prefs::domain::Keymap`; run by `shell::keymap::Keys` |
-| Mark | A flag on an image, set with Vim's m, that makes file actions and Ctrl+C act on every marked image at once. It belongs to the file, so re-sorting keeps it; a new image list starts with none. | selection, tag, select | `ImageList::marked` |
+| Mark | A flag on an image, set with Vim's m, that makes file actions, Ctrl+C and Ctrl+Shift+C act on every marked image at once. It belongs to the file, so re-sorting keeps it; a new image list starts with none. | selection, tag, select | `ImageList::marked` |
 | Magnification filter | How pixels are drawn when zoomed past native size: linear (smooth) or nearest (sharp); Ctrl+F toggles it. | bilinear filtering | |
 | Notice | A short text shown over the image that fades after a few seconds, for errors, progress and confirmations. | toast, popup | |
 | Pan | Moving a zoomed image within the window by drag or arrow keys. | scroll | |

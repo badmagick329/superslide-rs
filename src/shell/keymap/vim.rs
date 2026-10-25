@@ -326,7 +326,11 @@ fn single(stroke: Stroke, count: Option<usize>, repeat: bool) -> Option<(Command
             | NamedKey::ArrowDown => (pan_key(key), true),
             _ => return None,
         },
-        Stroke::Char { c, ctrl: true, .. } => match c {
+        Stroke::Char {
+            c,
+            shift,
+            ctrl: true,
+        } => match c {
             'd' | 'u' => {
                 let direction = if c == 'd' {
                     Direction::Forward
@@ -340,6 +344,8 @@ fn single(stroke: Stroke, count: Option<usize>, repeat: bool) -> Option<(Command
             '-' => (zoom(0.5), true),
             'f' => (Command::ToggleMagnificationFilter, false),
             'g' => (Command::CycleInfoOverlay, false),
+            // As in the classic keymap: Explorer's "Copy as path" key.
+            'c' if shift => (Command::CopyPathToClipboard, false),
             'c' => (Command::CopyToClipboard, false),
             'v' => (Command::PasteFromClipboard, false),
             _ => return None,
@@ -381,6 +387,7 @@ fn single(stroke: Stroke, count: Option<usize>, repeat: bool) -> Option<(Command
             'e' => (Command::Open { recursive: true }, false),
             'm' => (Command::ClearMarks, false),
             'n' => (Command::NextMarked(Direction::Backward), false),
+            'y' => (Command::CopyPathToClipboard, false),
             _ => return None,
         },
         Stroke::Named { ctrl: true, .. } | Stroke::Other => return None,
@@ -582,7 +589,7 @@ pub const BINDINGS: &[Row] = &[
     ),
     row(
         "m, [count]m",
-        "Mark or unmark the current image, or that many from here: dd, x, c and y then act on every marked image",
+        "Mark or unmark the current image, or that many from here: dd, x, c, y and Y then act on every marked image",
         Section::Marks,
         &[
             keys("m", Command::ToggleMarks(1)),
@@ -643,6 +650,15 @@ pub const BINDINGS: &[Row] = &[
         ],
     ),
     row(
+        "Y, Ctrl+Shift+C",
+        "Copy the current image's full path, or the marked ones' paths, as text",
+        Section::Clipboard,
+        &[
+            keys("Y", Command::CopyPathToClipboard),
+            keys("<C-S-c>", Command::CopyPathToClipboard),
+        ],
+    ),
+    row(
         "f, F11, Enter",
         "Toggle fullscreen",
         Section::Window,
@@ -699,8 +715,8 @@ pub(super) mod tests {
     use crate::view::domain::Anchor;
 
     /// Presses, in Vim's notation: a capital letter is Shift and that letter; `<C-x>` is Ctrl and
-    /// x; `<Space>`, `<BS>`, `<Del>`, `<CR>`, `<Esc>`, `<Left>`, `<F11>`, `<F9>` and `<lt>` (a
-    /// literal <) are those keys.
+    /// x; `<C-S-x>` is Ctrl, Shift and x, capitalised as Shift makes it; `<Space>`, `<BS>`,
+    /// `<Del>`, `<CR>`, `<Esc>`, `<Left>`, `<F11>`, `<F9>` and `<lt>` (a literal <) are those keys.
     fn presses(notation: &str) -> Vec<(Key, ModifiersState)> {
         let mut presses = Vec::new();
         let mut rest = notation;
@@ -727,6 +743,10 @@ pub(super) mod tests {
 
     fn special(name: &str) -> (Key, ModifiersState) {
         let none = ModifiersState::empty();
+        if let Some(c) = name.strip_prefix("C-S-") {
+            let ctrl_shift = ModifiersState::CONTROL | ModifiersState::SHIFT;
+            return (Key::Character(c.to_uppercase().into()), ctrl_shift);
+        }
         if let Some(c) = name.strip_prefix("C-") {
             return (Key::Character(c.into()), ModifiersState::CONTROL);
         }
@@ -813,6 +833,7 @@ pub(super) mod tests {
             Command::NextMarked(_) => "n / N",
             Command::Transfer(_) => "x / c",
             Command::CopyToClipboard | Command::PasteFromClipboard => "y, Ctrl+C / p, Ctrl+V",
+            Command::CopyPathToClipboard => "Y, Ctrl+Shift+C",
             Command::ToggleFullscreen => "f, F11, Enter",
             Command::LeaveFullscreen => "Esc",
             Command::Quit => "q, ZZ",
@@ -979,6 +1000,20 @@ pub(super) mod tests {
         );
         assert_eq!(typed("h"), [None]);
         assert_eq!(typed("l"), [None]);
+    }
+
+    #[test]
+    fn shift_turns_a_pixel_copy_into_a_path_copy() {
+        let pixels = Some(Command::CopyToClipboard);
+        let path = Some(Command::CopyPathToClipboard);
+        assert_eq!(typed("y"), [pixels]);
+        assert_eq!(typed("<C-c>"), [pixels]);
+        assert_eq!(typed("Y"), [path]);
+        assert_eq!(typed("<C-S-c>"), [path]);
+        // Caps Lock's Y has no Shift, so it still copies pixels.
+        let mut vim = Vim::default();
+        let caps_y = Key::Character("Y".into());
+        assert_eq!(vim.pressed(&caps_y, ModifiersState::empty(), false), pixels);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::browse::domain::{Direction, ImageList, Order, Resume, SortMode, Trave
 use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
 use crate::browse::presentation::{self as browse, describe};
 use crate::clipboard::infrastructure::{ClipboardThread, Done, Loading, Request};
-use crate::clipboard::presentation as clipboard;
+use crate::clipboard::presentation::{self as clipboard, Paths};
 use crate::file_actions::domain::{Action, Batch, Failure, Transfer};
 use crate::file_actions::infrastructure::FileActions;
 use crate::file_actions::presentation as file_actions;
@@ -1364,6 +1364,29 @@ impl Shown {
         self.clipboard.request(Request::Copy { path, turns });
     }
 
+    /// Ctrl+Shift+C / Vim's `Y`: the image on screen's full path as text, an error card's too,
+    /// or while any image is marked, every marked path. No `Copying…` notice: setting text is
+    /// instant.
+    fn copy_path(&mut self) {
+        let mut paths = self.marked();
+        if paths.is_empty() {
+            match &self.showing {
+                Showing::Nothing => return,
+                // The stand-in, and the clipboard image, which has no path either.
+                Showing::Image { path: None, .. } => {
+                    let now = Instant::now();
+                    self.notices.notify_as(CLIPBOARD_NOTICE, NOT_A_FILE, now);
+                    return self.window.request_redraw();
+                }
+                Showing::Image {
+                    path: Some(path), ..
+                }
+                | Showing::Error { path, .. } => paths.push(path.clone()),
+            }
+        }
+        self.clipboard.request(Request::CopyPaths(paths));
+    }
+
     fn clipboard_done(&mut self, done: Done) {
         let now = Instant::now();
         self.window.request_redraw();
@@ -1380,6 +1403,30 @@ impl Shown {
                     paths.iter().for_each(|path| images.unmark(path));
                 }
                 let text = clipboard::copied_files(&file_actions::images(paths.len()), &result);
+                return self.notices.notify_as(CLIPBOARD_NOTICE, text, now);
+            }
+            // Marks clear as after a file copy. With none marked, the one path is not marked,
+            // so unmarking it changes nothing.
+            Done::CopiedPaths { paths, result } => {
+                if result.is_ok()
+                    && let Some(images) = &mut self.images
+                {
+                    paths.iter().for_each(|path| images.unmark(path));
+                }
+                let text = match paths.as_slice() {
+                    [path] => clipboard::copied_paths(
+                        &Paths::One {
+                            file_name: &file_name(path),
+                        },
+                        &result,
+                    ),
+                    paths => clipboard::copied_paths(
+                        &Paths::Several {
+                            images: &file_actions::images(paths.len()),
+                        },
+                        &result,
+                    ),
+                };
                 return self.notices.notify_as(CLIPBOARD_NOTICE, text, now);
             }
             Done::Pasted(Err(failure)) => {
@@ -1582,6 +1629,7 @@ impl Shown {
             Command::DeleteToRecycleBin => return self.act(None),
             Command::Transfer(transfer) => return self.act(Some(transfer)),
             Command::CopyToClipboard => return self.copy(),
+            Command::CopyPathToClipboard => return self.copy_path(),
             Command::ToggleHelp => {
                 self.help = Some(Help::new());
                 // A button held as it opened must not click or drag once it closes.

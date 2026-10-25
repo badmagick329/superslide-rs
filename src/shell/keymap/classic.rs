@@ -63,6 +63,10 @@ pub fn for_key(key: &Key, modifiers: ModifiersState, repeat: bool) -> Option<Com
                 "f" | "F" if ctrl && !modifiers.alt_key() => {
                     (Command::ToggleMagnificationFilter, false)
                 }
+                // Explorer's "Copy as path" key; the next arm would take it for Ctrl+C.
+                "c" | "C" if ctrl && modifiers.shift_key() && !modifiers.alt_key() => {
+                    (Command::CopyPathToClipboard, false)
+                }
                 "c" | "C" if ctrl && !modifiers.alt_key() => (Command::CopyToClipboard, false),
                 "v" | "V" if ctrl && !modifiers.alt_key() => (Command::PasteFromClipboard, false),
                 _ if !plain => return None,
@@ -132,6 +136,7 @@ pub fn released(key: &Key) -> Option<Direction> {
 
 const NONE: ModifiersState = ModifiersState::empty();
 const CTRL: ModifiersState = ModifiersState::CONTROL;
+const CTRL_SHIFT: ModifiersState = ModifiersState::CONTROL.union(ModifiersState::SHIFT);
 
 const fn named(key: NamedKey, modifiers: ModifiersState, command: Command) -> Probe {
     Probe(Input::Named(key, modifiers), command)
@@ -316,6 +321,12 @@ pub const BINDINGS: &[Row] = &[
         ],
     ),
     row(
+        "Ctrl+Shift+C",
+        "Copy the current image's full path, or the marked ones' paths, as text",
+        Section::Clipboard,
+        &[char("C", CTRL_SHIFT, Command::CopyPathToClipboard)],
+    ),
+    row(
         "F11, Enter",
         "Toggle fullscreen",
         Section::Window,
@@ -415,6 +426,7 @@ pub(super) mod tests {
             Command::DeleteToRecycleBin => "Delete",
             Command::Transfer(_) => "M / C",
             Command::CopyToClipboard | Command::PasteFromClipboard => "Ctrl+C / Ctrl+V",
+            Command::CopyPathToClipboard => "Ctrl+Shift+C",
             Command::TogglePreferences => "P",
             Command::ToggleHelp => "?",
             Command::FocusHelpFilter => "/",
@@ -534,6 +546,14 @@ pub(super) mod tests {
             for_key(&Key::Character("c".into()), ctrl, false),
             Some(Command::CopyToClipboard)
         );
+        // Shift turns the pixel copy into a path copy, whichever case the character arrives in.
+        for c in ["C", "c"] {
+            assert_eq!(
+                for_key(&Key::Character(c.into()), CTRL_SHIFT, false),
+                Some(Command::CopyPathToClipboard),
+                "{c}"
+            );
+        }
         assert_eq!(
             for_key(&Key::Character("v".into()), ctrl, false),
             Some(Command::PasteFromClipboard)
