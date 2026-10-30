@@ -10,7 +10,7 @@ The project's ubiquitous language, one row per concept; the index's *Language* s
 | Count | Digits typed before a Vim key to say how many or which: `5j` moves five images, `5G` goes to the fifth. | prefix, number argument | `vim::Vim::count` |
 | Current image | The image on screen, one position in the image list. | current slide | |
 | Error card | What is drawn in place of an image that failed to decode: the file name and a one-line reason. | | `load::presentation::error_card` |
-| File action | Delete to the Recycle Bin (Delete), move (M) or copy (C) of the current image's file, or of every marked image's at once; the only writes the viewer makes to image files. | bulk action | `file_actions::domain::Action`; over the marked images, `Batch` |
+| File action | Delete to the Recycle Bin, or for good on a network drive (Delete), move (M) or copy (C) of the current image's file, or of every marked image's at once; the only writes the viewer makes to image files. | bulk action | `file_actions::domain::Action`; where a delete goes, `Deletion`; over the marked images, `Batch` |
 | Fit | The zoom level at which the whole image fits the window; every image opens at fit. | | |
 | Group by subfolder | Ordering that keeps each subfolder's images together, sorted by the sort mode within each group; Ctrl+Left/Right (Vim: gg / G) jumps between groups. | | `Order::grouped`, `ImageList::jump_group` |
 | Help overlay | The panel ? opens over the image, listing every binding, scrollable and filterable with /. While open it takes all input. | cheat sheet, shortcuts screen | `help` slice; rows are the keymap's `BINDINGS` |

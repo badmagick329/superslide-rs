@@ -3,12 +3,15 @@
 
 use std::path::Path;
 
-use crate::file_actions::domain::{Action, Batch, Failure, Transfer};
+use crate::file_actions::domain::{Action, Batch, Deletion, Failure, Transfer};
 
 pub fn describe(file_name: &str, action: &Action, result: &Result<(), Failure>) -> String {
     match (action, result) {
-        (Action::Delete, Ok(())) => format!("{file_name} moved to the Recycle Bin"),
-        (Action::Delete, Err(failure)) => format!("Cannot delete {file_name}: {failure}"),
+        (Action::Delete(Deletion::ToRecycleBin), Ok(())) => {
+            format!("{file_name} moved to the Recycle Bin")
+        }
+        (Action::Delete(Deletion::ForGood), Ok(())) => format!("Deleted {file_name}"),
+        (Action::Delete(_), Err(failure)) => format!("Cannot delete {file_name}: {failure}"),
         (Action::Transfer(transfer, folder), result) => {
             let folder = folder_name(folder);
             match (transfer, result) {
@@ -34,7 +37,8 @@ pub fn describe_batch(batch: &Batch) -> String {
         false => format!("{done} of {}", images(total)),
     };
     let head = match &batch.action {
-        Action::Delete => format!("{count} moved to the Recycle Bin"),
+        Action::Delete(Deletion::ToRecycleBin) => format!("{count} moved to the Recycle Bin"),
+        Action::Delete(Deletion::ForGood) => format!("Deleted {count}"),
         Action::Transfer(Transfer::Move, folder) => {
             format!("Moved {count} to {}", folder_name(folder))
         }
@@ -58,7 +62,7 @@ pub fn describe_batch(batch: &Batch) -> String {
 /// What a batch is about to do, shown until its notice replaces it.
 pub fn describe_batch_start(action: &Action, total: usize) -> String {
     let verb = match action {
-        Action::Delete => "Deleting",
+        Action::Delete(_) => "Deleting",
         Action::Transfer(Transfer::Move, _) => "Moving",
         Action::Transfer(Transfer::Copy, _) => "Copying",
     };
@@ -115,7 +119,7 @@ mod tests {
         }
         assert_eq!(describe_batch(&batch), "Moved 3 images to keep");
 
-        let mut batch = Batch::new(Action::Delete, &paths);
+        let mut batch = Batch::new(Action::Delete(Deletion::ToRecycleBin), &paths);
         batch.finish(&paths[0], Ok(()));
         batch.finish(&paths[1], Err(Failure::Failed("in use".to_owned())));
         batch.finish(&paths[2], Ok(()));
@@ -123,6 +127,11 @@ mod tests {
             describe_batch(&batch),
             "2 of 3 images moved to the Recycle Bin. b.jpg stays marked: in use"
         );
+
+        let mut batch = Batch::new(Action::Delete(Deletion::ForGood), &paths[..2]);
+        batch.finish(&paths[0], Ok(()));
+        batch.finish(&paths[1], Ok(()));
+        assert_eq!(describe_batch(&batch), "Deleted 2 images");
 
         let mut batch = Batch::new(
             Action::Transfer(Transfer::Copy, r"C:\keep".into()),

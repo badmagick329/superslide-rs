@@ -27,7 +27,7 @@ Open images by dragging a file or folder onto the window, or press **O**. Next t
 | N, D, Z, S | Sort by name, date, size, or shuffle |
 | V | Reverse the order |
 | O / Shift+O | Open a file / a folder and all its subfolders |
-| Delete | Send the image to the Recycle Bin |
+| Delete | Send the image to the Recycle Bin; on a network drive, which has none, delete it for good |
 | M / C | Move / copy the image to a folder |
 | Ctrl+C / Ctrl+V | Copy the image / show the image on the clipboard |
 | Ctrl+Shift+C | Copy the image's full path as text |

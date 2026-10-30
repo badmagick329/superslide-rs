@@ -22,8 +22,8 @@ use crate::browse::infrastructure::{Found, Open, Scan, ScanEvent};
 use crate::browse::presentation::{self as browse, describe};
 use crate::clipboard::infrastructure::{ClipboardThread, Done, Loading, Request};
 use crate::clipboard::presentation::{self as clipboard, Paths};
-use crate::file_actions::domain::{Action, Batch, Failure, Transfer};
-use crate::file_actions::infrastructure::FileActions;
+use crate::file_actions::domain::{Action, Batch, Deletion, Failure, Transfer};
+use crate::file_actions::infrastructure::{FileActions, deletion};
 use crate::file_actions::presentation as file_actions;
 use crate::help::domain::{Binding, Help};
 use crate::help::presentation as help;
@@ -1217,6 +1217,22 @@ impl Shown {
         let Some(action) = self.action(transfer, paths.len(), first) else {
             return;
         };
+        if !matches!(action, Action::Delete(_)) {
+            return self.start_batch(action, paths);
+        }
+        // A list opened from several paths can span drives, only some with a Recycle Bin. Two
+        // batches then, the later notice replacing the earlier, as with any two batches at once.
+        let (to_bin, for_good): (Vec<_>, Vec<_>) = paths
+            .into_iter()
+            .partition(|path| deletion(path) == Deletion::ToRecycleBin);
+        self.start_batch(Action::Delete(Deletion::ToRecycleBin), to_bin);
+        self.start_batch(Action::Delete(Deletion::ForGood), for_good);
+    }
+
+    fn start_batch(&mut self, action: Action, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
         let text = file_actions::describe_batch_start(&action, paths.len());
         self.notices.notify_as(BATCH_NOTICE, text, Instant::now());
         self.window.request_redraw();
@@ -1227,11 +1243,11 @@ impl Shown {
         self.batches.push(Batch::new(action, &paths));
     }
 
-    /// Delete for `None`; a move or copy asks for its folder first, and is `None` when that is
-    /// cancelled.
+    /// Delete for `None`, to the Recycle Bin where `path`'s drive has one; a move or copy asks
+    /// for its folder first, and is `None` when that is cancelled.
     fn action(&mut self, transfer: Option<Transfer>, images: usize, path: &Path) -> Option<Action> {
         let Some(transfer) = transfer else {
-            return Some(Action::Delete);
+            return Some(Action::Delete(deletion(path)));
         };
         let folder = self.pick_folder(transfer, images, path)?;
         self.target_folder = Some(folder.clone());

@@ -1,5 +1,5 @@
 //! What delete, move and copy ask for, how each can end, and a batch of them over the marked
-//! images. No filesystem access.
+//! images. No filesystem access: which drives have a Recycle Bin is the infrastructure's call.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -12,10 +12,18 @@ pub enum Transfer {
     Copy,
 }
 
+/// Where a deleted image goes, decided by its drive. Neither asks first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Deletion {
+    /// The Recycle Bin is the undo.
+    ToRecycleBin,
+    /// A network drive has no Recycle Bin, and deleting there is expected to be for good.
+    ForGood,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// To the Recycle Bin, with no confirmation: the Recycle Bin is the undo.
-    Delete,
+    Delete(Deletion),
     /// Into this folder, under the same file name.
     Transfer(Transfer, PathBuf),
 }
@@ -23,7 +31,10 @@ pub enum Action {
 impl Action {
     /// Whether success means the file is gone from where it was, so it leaves the image list.
     pub fn removes(&self) -> bool {
-        matches!(self, Action::Delete | Action::Transfer(Transfer::Move, _))
+        matches!(
+            self,
+            Action::Delete(_) | Action::Transfer(Transfer::Move, _)
+        )
     }
 }
 
@@ -95,7 +106,7 @@ mod tests {
     #[test]
     fn a_batch_ends_with_its_last_result() {
         let paths = [PathBuf::from("a.jpg"), PathBuf::from("b.jpg")];
-        let mut batch = Batch::new(Action::Delete, &paths);
+        let mut batch = Batch::new(Action::Delete(Deletion::ToRecycleBin), &paths);
         assert!(batch.holds(Path::new("a.jpg")));
         assert!(!batch.finish(Path::new("a.jpg"), Ok(())));
         assert!(!batch.holds(Path::new("a.jpg")));

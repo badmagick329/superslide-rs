@@ -6,13 +6,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader};
 use std::iter;
 use std::os::windows::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, MoveFileExW};
+use windows_sys::Win32::System::WindowsProgramming::DRIVE_REMOTE;
 
-use crate::file_actions::domain::{Action, Failure, Transfer};
+use crate::file_actions::domain::{Action, Deletion, Failure, Transfer};
 
 /// Read size for copies: a 50 MP JPEG is about 20 MB, so this is a few dozen reads.
 const COPY_BUFFER: usize = 1 << 20;
@@ -64,11 +65,33 @@ impl Drop for FileActions {
     }
 }
 
+/// A network drive, mapped or UNC, has no Recycle Bin. Sending its files through `trash` anyway
+/// fails or deletes them for good unasked: `trash` resolves a drive letter to the UNC path behind
+/// it, which the shell can reject ("The parameter is incorrect"), and the shell does not warn
+/// before deleting for good.
+pub fn deletion(path: &Path) -> Deletion {
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return Deletion::ToRecycleBin;
+    };
+    let root = match prefix.kind() {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => format!(r"{}:\", letter as char),
+        Prefix::UNC(..) | Prefix::VerbatimUNC(..) => return Deletion::ForGood,
+        _ => return Deletion::ToRecycleBin,
+    };
+    let root = wide(Path::new(&root));
+    // SAFETY: a NUL-terminated UTF-16 string that outlives the call.
+    match unsafe { GetDriveTypeW(root.as_ptr()) } {
+        DRIVE_REMOTE => Deletion::ForGood,
+        _ => Deletion::ToRecycleBin,
+    }
+}
+
 fn run(path: &Path, action: &Action) -> Result<(), Failure> {
     match action {
-        // `trash` asks Windows to warn first where a drive has no Recycle Bin (network shares),
-        // so nothing is deleted for good without a prompt.
-        Action::Delete => trash::delete(path).map_err(|e| Failure::Failed(e.to_string())),
+        Action::Delete(Deletion::ToRecycleBin) => {
+            trash::delete(path).map_err(|e| Failure::Failed(e.to_string()))
+        }
+        Action::Delete(Deletion::ForGood) => fs::remove_file(path).map_err(failed),
         Action::Transfer(transfer, folder) => {
             let Some(name) = path.file_name() else {
                 return Err(Failure::Failed("not a file".to_owned()));
@@ -102,11 +125,6 @@ fn failed(e: io::Error) -> Failure {
 /// A rename that fails if `target` exists. `std::fs::rename` replaces it on Windows. Fails with
 /// `CrossesDevices` between drives, where a rename is not possible.
 fn rename_new(source: &Path, target: &Path) -> io::Result<()> {
-    let wide = |path: &Path| -> Vec<u16> {
-        OsStr::encode_wide(path.as_os_str())
-            .chain(iter::once(0))
-            .collect()
-    };
     let (source, target) = (wide(source), wide(target));
     // SAFETY: both are NUL-terminated UTF-16 strings that outlive the call. Flags 0: neither
     // replace an existing file nor fall back to a copy.
@@ -114,6 +132,13 @@ fn rename_new(source: &Path, target: &Path) -> io::Result<()> {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
     }
+}
+
+/// `path` as a NUL-terminated UTF-16 string, for Win32 calls.
+fn wide(path: &Path) -> Vec<u16> {
+    OsStr::encode_wide(path.as_os_str())
+        .chain(iter::once(0))
+        .collect()
 }
 
 /// Copy, then delete the original only once the copy is complete and on disk. A copy that fails,
@@ -240,6 +265,18 @@ mod tests {
         let result = move_across(&missing, &b.join("gone.jpg"));
         assert!(matches!(result, Err(Failure::Failed(_))));
         assert!(!b.join("gone.jpg").exists());
+    }
+
+    #[test]
+    fn only_a_network_path_is_deleted_for_good() {
+        let (_dir, source, _) = setup();
+        assert_eq!(deletion(&source), Deletion::ToRecycleBin);
+        for unc in [r"\\server\share\a.jpg", r"\\?\UNC\server\share\a.jpg"] {
+            assert_eq!(deletion(Path::new(unc)), Deletion::ForGood);
+        }
+
+        run(&source, &Action::Delete(Deletion::ForGood)).unwrap();
+        assert!(!source.exists());
     }
 
     #[test]
